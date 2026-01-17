@@ -1,15 +1,14 @@
 # takopi-slack-plugin
 
-Slack transport plugin for Takopi. Supports Socket Mode (recommended) or Web
-API polling, and responds in a single channel or DM.
+Slack transport plugin for Takopi. Uses Slack Socket Mode only, and responds in a
+single channel or DM.
 
 ## Requirements
 
 - Python 3.14+
 - takopi >=0.20.0
 - Slack bot token with `chat:write`
-- For polling: a history scope for the channel type (e.g. `channels:history`)
-- For Socket Mode: an app token (`xapp-`) with `connections:write`
+- Slack app token (`xapp-`) with `connections:write`
 
 ## Install
 
@@ -36,11 +35,11 @@ transport = "slack"
 
 [transports.slack]
 bot_token = "xoxb-..."
+app_token = "xapp-..."
 channel_id = "C12345678"
 # message_overflow = "trim"  # or "split"
 # reply_in_thread = false
 # require_mention = false
-# poll_interval_s = 1.0
 # session_mode = "stateless"  # or "thread"
 ```
 
@@ -55,16 +54,15 @@ Example:
 @takopi /zkp2p-clients @feat/web/monad-usdt0 add a retry to the API call
 ```
 
-### Socket Mode (recommended)
+### Socket Mode (required)
 
-Socket Mode avoids polling and rate limits. Enable it in your Slack app and
-create an app-level token with `connections:write`, then configure:
+Enable Socket Mode in your Slack app and create an app-level token with
+`connections:write`, then configure:
 
 ```toml
 [transports.slack]
 bot_token = "xoxb-..."
 app_token = "xapp-..."
-socket_mode = true
 channel_id = "C12345678"
 require_mention = true
 ```

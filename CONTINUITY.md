@@ -1,5 +1,5 @@
 Goal (incl. success criteria):
-- Require Slack messages to include explicit `/project` and `@branch` directives; ignore all others; release `v0.0.8`.
+- Require Socket Mode only (remove polling) and clean up unused Slack transport code.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6`, `v0.0.7`, and `v0.0.8` tagged and pushed.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6`, `v0.0.7`, and `v0.0.8` tagged and pushed; socket-only cleanup staged locally.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -49,10 +49,10 @@ Done:
 - Created and pushed tag `v0.0.8`.
 
 Now:
-- Share new Slack message requirement and how to format messages.
+- Commit socket-only cleanup, bump version, and tag release.
 
 Next:
-- Confirm desired Slack UX beyond per-thread sessions (slash commands/app home) if needed.
+- Confirm any further Slack UX changes (slash commands/app home) if needed.
 
 Open questions (UNCONFIRMED if needed):
 - None.

@@ -16,8 +16,11 @@ async def interactive_setup(*, force: bool) -> bool:
     except ConfigError:
         config = {}
 
-    token = questionary.password("Slack bot token").ask()
-    if not token:
+    bot_token = questionary.password("Slack bot token").ask()
+    if not bot_token:
+        return False
+    app_token = questionary.password("Slack app token (xapp-)").ask()
+    if not app_token:
         return False
     channel_id = questionary.text("Slack channel ID").ask()
     if not channel_id:
@@ -42,7 +45,8 @@ async def interactive_setup(*, force: bool) -> bool:
         config_path=config_path,
         label="transports.slack",
     )
-    slack["bot_token"] = str(token).strip()
+    slack["bot_token"] = str(bot_token).strip()
+    slack["app_token"] = str(app_token).strip()
     slack["channel_id"] = str(channel_id).strip()
     slack["reply_in_thread"] = bool(reply_in_thread)
     slack["require_mention"] = bool(require_mention)

@@ -96,11 +96,9 @@ class SlackBridgeConfig:
     channel_id: str
     startup_msg: str
     exec_cfg: ExecBridgeConfig
-    poll_interval_s: float = 1.0
     reply_in_thread: bool = False
     require_mention: bool = False
-    socket_mode: bool = False
-    app_token: str | None = None
+    app_token: str
     thread_store: SlackThreadSessionStore | None = None
 
 
@@ -318,13 +316,6 @@ def _split_text(text: str, max_chars: int) -> list[str]:
         chunks.append(text[start : start + max_chars])
         start += max_chars
     return chunks
-
-
-def _parse_ts(value: str) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _mention_regex(bot_user_id: str) -> re.Pattern[str]:
@@ -675,65 +666,6 @@ def _resolve_mention_requirement(
     return mention_required
 
 
-async def _run_polling_loop(
-    cfg: SlackBridgeConfig,
-    *,
-    bot_user_id: str | None,
-) -> None:
-    last_seen_value = 0.0
-    last_seen_raw: str | None = None
-    try:
-        seed = await cfg.client.conversations_history(
-            channel_id=cfg.channel_id, limit=1
-        )
-        if seed:
-            last_seen_value = _parse_ts(seed[0].ts)
-            last_seen_raw = seed[0].ts
-    except SlackApiError as exc:
-        logger.warning("slack.seed_failed", error=str(exc))
-
-    running_tasks: RunningTasks = {}
-    mention_required = _resolve_mention_requirement(cfg, bot_user_id)
-
-    async with anyio.create_task_group() as tg:
-        while True:
-            try:
-                messages = await cfg.client.conversations_history(
-                    channel_id=cfg.channel_id,
-                    oldest=last_seen_raw,
-                )
-            except SlackApiError as exc:
-                logger.warning("slack.poll_failed", error=str(exc))
-                await anyio.sleep(cfg.poll_interval_s)
-                continue
-            messages.sort(key=lambda msg: _parse_ts(msg.ts))
-            for msg in messages:
-                ts_value = _parse_ts(msg.ts)
-                if ts_value <= last_seen_value:
-                    continue
-                last_seen_value = ts_value
-                last_seen_raw = msg.ts
-                if _should_skip_message(msg, bot_user_id):
-                    continue
-                cleaned, allowed = _strip_bot_mention(
-                    msg.text or "",
-                    bot_user_id=bot_user_id,
-                    require_mention=mention_required,
-                )
-                if not allowed:
-                    continue
-                if not cleaned.strip():
-                    continue
-                tg.start_soon(
-                    _safe_handle_slack_message,
-                    cfg,
-                    msg,
-                    cleaned,
-                    running_tasks,
-                )
-            await anyio.sleep(cfg.poll_interval_s)
-
-
 async def _run_socket_mode_loop(
     cfg: SlackBridgeConfig,
     *,
@@ -746,7 +678,7 @@ async def _run_socket_mode_loop(
 
     running_tasks: RunningTasks = {}
     mention_required = _resolve_mention_requirement(cfg, bot_user_id)
-    backoff_s = max(1.0, float(cfg.poll_interval_s))
+    backoff_s = 1.0
 
     async with anyio.create_task_group() as tg:
         while True:
@@ -844,7 +776,4 @@ async def run_main_loop(
     except SlackApiError as exc:
         logger.warning("slack.auth_test_failed", error=str(exc))
 
-    if cfg.socket_mode:
-        await _run_socket_mode_loop(cfg, bot_user_id=bot_user_id)
-    else:
-        await _run_polling_loop(cfg, bot_user_id=bot_user_id)
+    await _run_socket_mode_loop(cfg, bot_user_id=bot_user_id)

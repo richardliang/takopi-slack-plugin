@@ -11,12 +11,10 @@ from takopi.api import ConfigError
 class SlackTransportSettings:
     bot_token: str
     channel_id: str
-    app_token: str | None = None
-    socket_mode: bool = False
+    app_token: str
     message_overflow: Literal["trim", "split"] = "trim"
     reply_in_thread: bool = False
     require_mention: bool = False
-    poll_interval_s: float = 1.0
     session_mode: Literal["stateless", "thread"] = "stateless"
 
     @classmethod
@@ -32,18 +30,18 @@ class SlackTransportSettings:
 
         bot_token = _require_str(config, "bot_token", config_path=config_path)
         channel_id = _require_str(config, "channel_id", config_path=config_path)
-        app_token = _optional_str(config, "app_token", config_path=config_path)
-        socket_mode = _optional_bool(
-            config,
-            "socket_mode",
-            config_path=config_path,
-            default=app_token is not None,
-        )
-        if socket_mode and app_token is None:
+        if "poll_interval_s" in config:
             raise ConfigError(
-                f"Invalid `transports.slack.app_token` in {config_path}; "
-                "required when socket_mode = true."
+                f"Invalid `transports.slack.poll_interval_s` in {config_path}; "
+                "polling mode has been removed."
             )
+        socket_mode = config.get("socket_mode")
+        if socket_mode is not None and socket_mode is not True:
+            raise ConfigError(
+                f"Invalid `transports.slack.socket_mode` in {config_path}; "
+                "socket mode is required."
+            )
+        app_token = _require_str(config, "app_token", config_path=config_path)
 
         message_overflow = config.get("message_overflow", "trim")
         if not isinstance(message_overflow, str):
@@ -64,9 +62,6 @@ class SlackTransportSettings:
         require_mention = _optional_bool(
             config, "require_mention", config_path=config_path, default=False
         )
-        poll_interval_s = _optional_float(
-            config, "poll_interval_s", config_path=config_path, default=1.0
-        )
         session_mode = config.get("session_mode", "stateless")
         if not isinstance(session_mode, str):
             raise ConfigError(
@@ -84,11 +79,9 @@ class SlackTransportSettings:
             bot_token=bot_token,
             channel_id=channel_id,
             app_token=app_token,
-            socket_mode=socket_mode,
             message_overflow=message_overflow,
             reply_in_thread=reply_in_thread,
             require_mention=require_mention,
-            poll_interval_s=poll_interval_s,
             session_mode=session_mode,
         )
 
@@ -119,43 +112,3 @@ def _optional_bool(
         f"Invalid `transports.slack.{key}` in {config_path}; expected a boolean."
     )
 
-
-def _optional_str(
-    config: dict[str, Any],
-    key: str,
-    *,
-    config_path: Path,
-) -> str | None:
-    if key not in config:
-        return None
-    value = config.get(key)
-    if value is None:
-        return None
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    raise ConfigError(
-        f"Invalid `transports.slack.{key}` in {config_path}; expected a string."
-    )
-
-
-def _optional_float(
-    config: dict[str, Any],
-    key: str,
-    *,
-    config_path: Path,
-    default: float,
-) -> float:
-    if key not in config:
-        return default
-    value = config.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ConfigError(
-            f"Invalid `transports.slack.{key}` in {config_path}; "
-            "expected a number."
-        )
-    value = float(value)
-    if value < 0:
-        raise ConfigError(
-            f"Invalid `transports.slack.{key}` in {config_path}; must be >= 0."
-        )
-    return value

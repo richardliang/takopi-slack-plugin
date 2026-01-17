@@ -144,42 +144,6 @@ class SlackClient:
         await self._request("POST", "/chat.delete", json=data)
         return True
 
-    async def conversations_history(
-        self,
-        *,
-        channel_id: str,
-        oldest: str | None = None,
-        limit: int = 200,
-    ) -> list[SlackMessage]:
-        cursor: str | None = None
-        messages: list[SlackMessage] = []
-        while True:
-            params: dict[str, Any] = {
-                "channel": channel_id,
-                "limit": limit,
-            }
-            if oldest is not None:
-                params["oldest"] = oldest
-            if cursor:
-                params["cursor"] = cursor
-            payload = await self._request("GET", "/conversations.history", params=params)
-            items = payload.get("messages")
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        messages.append(SlackMessage.from_api(item))
-            metadata = payload.get("response_metadata")
-            next_cursor = None
-            if isinstance(metadata, dict):
-                raw_cursor = metadata.get("next_cursor")
-                if isinstance(raw_cursor, str) and raw_cursor:
-                    next_cursor = raw_cursor
-            if not next_cursor:
-                break
-            cursor = next_cursor
-        return messages
-
-
 async def _request_with_client(
     client: httpx.AsyncClient,
     method: str,

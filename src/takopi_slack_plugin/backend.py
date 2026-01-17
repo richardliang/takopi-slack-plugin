@@ -145,10 +145,8 @@ class SlackBackend(TransportBackend):
             channel_id=settings.channel_id,
             startup_msg=startup_msg,
             exec_cfg=exec_cfg,
-            poll_interval_s=max(0.2, float(settings.poll_interval_s)),
             reply_in_thread=settings.reply_in_thread,
             require_mention=settings.require_mention,
-            socket_mode=settings.socket_mode,
             app_token=settings.app_token,
             thread_store=thread_store,
         )
