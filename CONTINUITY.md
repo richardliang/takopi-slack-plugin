@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; added Slack context persistence for /project and @branch directives, pending release.
+- In progress; tag `v0.0.5` pushed, awaiting publish and install.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -35,9 +35,11 @@ Done:
 - Fixed Socket Mode handler signature; bumped to `0.0.4`, committed, and pushed to `main`.
 - Created and pushed tag `v0.0.4`.
 - Added Slack context store and directive-only context setting; updated README.
+- Bumped version to `0.0.5`, committed, and pushed to `main`.
+- Created and pushed tag `v0.0.5`.
 
 Now:
-- Commit and push context directive changes; tag `v0.0.5`.
+- Confirm publish workflow run on `v0.0.5` and reinstall package.
 
 Next:
 - Verify Slack context shortcuts with `0.0.5`.
