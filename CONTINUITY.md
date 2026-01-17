@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; new release requested.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6` tagged and pushed.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -38,9 +38,11 @@ Done:
 - Bumped version to `0.0.5`, committed, and pushed to `main`.
 - Created and pushed tag `v0.0.5`.
 - Reverted Slack context shortcut changes; `main` version back to `0.0.4`.
+- Bumped version to `0.0.6`, committed, and pushed to `main`.
+- Created and pushed tag `v0.0.6`.
 
 Now:
-- Inspect Slack plugin for context retention/shortcuts; bump version to `0.0.6` and tag; answer user questions.
+- Answer user questions about Slack message shortcuts and thread context behavior.
 
 Next:
 - If needed, implement message shortcuts or Slack app UI changes (slash command, modal, app home).
