@@ -60,6 +60,22 @@ require_mention = true
 Enable Slack events for `message.channels`, `message.groups`, `message.im`,
 `message.mpim`, and/or `app_mention`, depending on your channel type.
 
+## Context shortcuts
+
+Slack treats `/` at the start of a message as a slash command and will not
+deliver it to the bot. Use a mention first so the message is delivered:
+
+```
+@takopi /<project> @<branch> do the thing
+```
+
+If you send only directives (no prompt), the bot saves the context for the
+channel/thread:
+
+```
+@takopi /<project> @<branch>
+```
+
 If you use a plugin allowlist, enable this distribution:
 
 ```toml

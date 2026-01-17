@@ -7,11 +7,11 @@ Constraints/Assumptions:
 - `../takopi` is expected to contain the current Slack plugin logic (UNCONFIRMED).
 
 Key decisions:
-- Use package name `takopi-slack-plugin` and project URL `zkp2p.xyz`; bump to `0.0.4` for Socket Mode bugfix release.
+- Use package name `takopi-slack-plugin` and project URL `zkp2p.xyz`; bump to `0.0.5` for Slack context directives.
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; tag `v0.0.4` pushed, awaiting publish and install.
+- In progress; added Slack context persistence for /project and @branch directives, pending release.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -34,15 +34,16 @@ Done:
 - Created and pushed tag `v0.0.3`.
 - Fixed Socket Mode handler signature; bumped to `0.0.4`, committed, and pushed to `main`.
 - Created and pushed tag `v0.0.4`.
+- Added Slack context store and directive-only context setting; updated README.
 
 Now:
-- Confirm publish workflow run on `v0.0.4` and reinstall package.
+- Commit and push context directive changes; tag `v0.0.5`.
 
 Next:
-- Verify Socket Mode behavior with `0.0.4`.
+- Verify Slack context shortcuts with `0.0.5`.
 
 Open questions (UNCONFIRMED if needed):
-- Is Socket Mode enabled with app token and event subscriptions (`app_mention`/`message.*`) (UNCONFIRMED)?
+- Should Slack use mention + slash syntax (e.g. `@takopi /project @branch`) given Slack slash commands aren’t delivered (UNCONFIRMED)?
 
 Working set (files/ids/commands):
 - CONTINUITY.md

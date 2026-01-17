@@ -19,7 +19,13 @@ from takopi.api import (
     load_settings,
 )
 
-from .bridge import SlackBridgeConfig, SlackPresenter, SlackTransport, run_main_loop
+from .bridge import (
+    SlackBridgeConfig,
+    SlackContextStore,
+    SlackPresenter,
+    SlackTransport,
+    run_main_loop,
+)
 from .client import SlackClient
 from .config import SlackTransportSettings
 from .onboarding import interactive_setup
@@ -128,6 +134,7 @@ class SlackBackend(TransportBackend):
         client = SlackClient(settings.bot_token)
         transport = SlackTransport(client)
         presenter = SlackPresenter(message_overflow=settings.message_overflow)
+        context_store = SlackContextStore()
         exec_cfg = ExecBridgeConfig(
             transport=transport,
             presenter=presenter,
@@ -144,6 +151,7 @@ class SlackBackend(TransportBackend):
             require_mention=settings.require_mention,
             socket_mode=settings.socket_mode,
             app_token=settings.app_token,
+            context_store=context_store,
         )
 
         async def run_loop() -> None:

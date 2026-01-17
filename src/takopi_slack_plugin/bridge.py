@@ -28,6 +28,7 @@ from takopi.api import (
     reset_run_base_dir,
     set_run_base_dir,
 )
+from takopi.context import RunContext
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
 
@@ -100,6 +101,33 @@ class SlackBridgeConfig:
     require_mention: bool = False
     socket_mode: bool = False
     app_token: str | None = None
+    context_store: "SlackContextStore | None" = None
+
+
+class SlackContextStore:
+    def __init__(self) -> None:
+        self._contexts: dict[tuple[str, str | None], RunContext] = {}
+        self._lock = anyio.Lock()
+
+    async def get(
+        self, *, channel_id: str, thread_id: str | None
+    ) -> RunContext | None:
+        async with self._lock:
+            return self._contexts.get((channel_id, thread_id))
+
+    async def set(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str | None,
+        context: RunContext,
+    ) -> None:
+        async with self._lock:
+            self._contexts[(channel_id, thread_id)] = context
+
+    async def clear(self, *, channel_id: str, thread_id: str | None) -> None:
+        async with self._lock:
+            self._contexts.pop((channel_id, thread_id), None)
 
 
 class SlackTransport:
@@ -492,6 +520,16 @@ async def _send_startup(cfg: SlackBridgeConfig) -> None:
         logger.info("startup.sent", channel_id=cfg.channel_id)
 
 
+def _context_key(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+) -> tuple[str, str | None]:
+    thread_id = message.thread_ts
+    if cfg.reply_in_thread and thread_id is None:
+        thread_id = message.ts
+    return cfg.channel_id, thread_id
+
+
 async def _handle_slack_message(
     cfg: SlackBridgeConfig,
     message: SlackMessage,
@@ -502,11 +540,16 @@ async def _handle_slack_message(
     thread_id = message.thread_ts if cfg.reply_in_thread and message.thread_ts else None
     if cfg.reply_in_thread and thread_id is None:
         thread_id = message.ts
+    ambient_context = None
+    if cfg.context_store is not None:
+        ambient_context = await cfg.context_store.get(
+            channel_id=channel_id, thread_id=thread_id
+        )
     try:
         resolved = cfg.runtime.resolve_message(
             text=text,
             reply_text=None,
-            ambient_context=None,
+            ambient_context=ambient_context,
             chat_id=None,
         )
     except DirectiveError as exc:
@@ -521,6 +564,25 @@ async def _handle_slack_message(
         return
 
     prompt = resolved.prompt
+    if resolved.context_source == "directives" and resolved.context is not None:
+        if cfg.context_store is not None:
+            await cfg.context_store.set(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                context=resolved.context,
+            )
+        if not prompt.strip():
+            context_line = cfg.runtime.format_context_line(resolved.context)
+            summary = context_line or "context set"
+            await _send_plain(
+                cfg.exec_cfg.transport,
+                channel_id=channel_id,
+                user_msg_id=message.ts,
+                thread_id=thread_id,
+                text=f"context set to {summary}",
+                notify=False,
+            )
+            return
     if not prompt.strip():
         return
 
