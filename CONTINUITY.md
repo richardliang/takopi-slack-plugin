@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6`, `v0.0.7`, `v0.0.8`, and `v0.0.9` tagged and pushed.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6`, `v0.0.7`, `v0.0.8`, and `v0.0.9` tagged and pushed; config cleanup staged.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -53,7 +53,7 @@ Done:
 - Created and pushed tag `v0.0.9`.
 
 Now:
-- Share Socket Mode-only requirement and updated config guidance.
+- Commit config cleanup (minimal required fields), bump version, and tag release.
 
 Next:
 - Confirm any further Slack UX changes (slash commands/app home) if needed.

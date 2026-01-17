@@ -25,19 +25,6 @@ async def interactive_setup(*, force: bool) -> bool:
     channel_id = questionary.text("Slack channel ID").ask()
     if not channel_id:
         return False
-    reply_in_thread = questionary.confirm(
-        "Reply in thread?",
-        default=False,
-    ).ask()
-    require_mention = questionary.confirm(
-        "Require @bot mention?",
-        default=False,
-    ).ask()
-    session_mode = questionary.confirm(
-        "Remember sessions per thread?",
-        default=False,
-    ).ask()
-
     transports = _ensure_table(config, "transports", config_path=config_path)
     slack = _ensure_table(
         transports,
@@ -48,10 +35,6 @@ async def interactive_setup(*, force: bool) -> bool:
     slack["bot_token"] = str(bot_token).strip()
     slack["app_token"] = str(app_token).strip()
     slack["channel_id"] = str(channel_id).strip()
-    slack["reply_in_thread"] = bool(reply_in_thread)
-    slack["require_mention"] = bool(require_mention)
-    if session_mode:
-        slack["session_mode"] = "thread"
     config["transport"] = "slack"
     write_config(config, config_path)
     return True

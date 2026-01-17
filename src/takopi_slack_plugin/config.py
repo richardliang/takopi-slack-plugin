@@ -30,17 +30,6 @@ class SlackTransportSettings:
 
         bot_token = _require_str(config, "bot_token", config_path=config_path)
         channel_id = _require_str(config, "channel_id", config_path=config_path)
-        if "poll_interval_s" in config:
-            raise ConfigError(
-                f"Invalid `transports.slack.poll_interval_s` in {config_path}; "
-                "polling mode has been removed."
-            )
-        socket_mode = config.get("socket_mode")
-        if socket_mode is not None and socket_mode is not True:
-            raise ConfigError(
-                f"Invalid `transports.slack.socket_mode` in {config_path}; "
-                "socket mode is required."
-            )
         app_token = _require_str(config, "app_token", config_path=config_path)
 
         message_overflow = config.get("message_overflow", "trim")
@@ -111,4 +100,3 @@ def _optional_bool(
     raise ConfigError(
         f"Invalid `transports.slack.{key}` in {config_path}; expected a boolean."
     )
-

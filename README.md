@@ -37,10 +37,6 @@ transport = "slack"
 bot_token = "xoxb-..."
 app_token = "xapp-..."
 channel_id = "C12345678"
-# message_overflow = "trim"  # or "split"
-# reply_in_thread = false
-# require_mention = false
-# session_mode = "stateless"  # or "thread"
 ```
 
 ### Required Directives

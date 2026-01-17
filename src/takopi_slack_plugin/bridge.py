@@ -94,11 +94,11 @@ class SlackBridgeConfig:
     client: SlackClient
     runtime: TransportRuntime
     channel_id: str
+    app_token: str
     startup_msg: str
     exec_cfg: ExecBridgeConfig
     reply_in_thread: bool = False
     require_mention: bool = False
-    app_token: str
     thread_store: SlackThreadSessionStore | None = None
 
 
@@ -673,7 +673,7 @@ async def _run_socket_mode_loop(
 ) -> None:
     if not cfg.app_token:
         raise ConfigError(
-            "Missing transports.slack.app_token for socket_mode."
+            "Missing transports.slack.app_token."
         )
 
     running_tasks: RunningTasks = {}
