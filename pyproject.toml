@@ -25,7 +25,7 @@ classifiers = [
 Homepage = "https://zkp2p.xyz"
 
 [project.entry-points."takopi.transport_backends"]
-slack = "takopi_transport_slack.backend:BACKEND"
+slack = "takopi_slack_plugin.backend:BACKEND"
 
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]

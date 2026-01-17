@@ -8,27 +8,34 @@ Constraints/Assumptions:
 
 Key decisions:
 - Use package name `takopi-slack-plugin` with version `0.0.1` and project URL `zkp2p.xyz`.
+- Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; identified existing Slack transport package in `../takopi`.
+- In progress; package prepared, needs commit and push to main.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
 - Copied Slack transport package files into this workspace.
 - Updated README with install/config/start instructions.
 - Updated `pyproject.toml` and README to use name `takopi-slack-plugin`, version `0.0.1`, and homepage `https://zkp2p.xyz`.
+- Updated entrypoint module path to `takopi_slack_plugin.backend:BACKEND` and renamed package directory.
+- Built sdist and wheel via `uv build`.
+- Attempted `uv publish`; failed due to missing PyPI credentials/trusted publishing token.
+- Added GitHub Actions trusted publishing workflow at `.github/workflows/workflow.yml`.
 
 Now:
-- Confirm metadata is ready for publishing and whether to adjust author/repository fields.
+- Commit changes and push to `main`.
 
 Next:
-- Optional: add publishing instructions or build checks before release.
+- Trigger release (tag or workflow dispatch) after PyPI trusted publishing is configured.
 
 Open questions (UNCONFIRMED if needed):
-- Publish registry/ownership details (PyPI org/user) if needed.
+- Confirm repo/owner/workflow path for trusted publishing and optional environment name (UNCONFIRMED).
 
 Working set (files/ids/commands):
 - CONTINUITY.md
 - /home/ubuntu/zkp2p/takopi/packages/takopi-transport-slack
 - pyproject.toml
 - README.md
+- src/takopi_slack_plugin
+- .github/workflows/workflow.yml
