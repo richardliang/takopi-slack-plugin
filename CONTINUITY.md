@@ -1,5 +1,5 @@
 Goal (incl. success criteria):
-- Add per-thread Slack session retention (context + resume) and release `v0.0.7`.
+- Require Slack messages to include explicit `/project` and `@branch` directives; ignore all others; release `v0.0.8`.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6` and `v0.0.7` tagged and pushed.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6` and `v0.0.7` tagged and pushed; directive enforcement changes staged locally.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -46,7 +46,7 @@ Done:
 - Created and pushed tag `v0.0.7`.
 
 Now:
-- Tell user how to enable per-thread sessions in Slack config and any caveats.
+- Commit strict `/project` + `@branch` directive requirement, bump to `0.0.8`, and tag/push.
 
 Next:
 - Confirm desired Slack UX beyond per-thread sessions (slash commands/app home) if needed.

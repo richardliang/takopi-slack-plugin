@@ -346,6 +346,54 @@ def _strip_bot_mention(
     return cleaned.strip(), True
 
 
+def _has_required_directives(text: str, runtime: TransportRuntime) -> bool:
+    if not text:
+        return False
+    lines = text.splitlines()
+    idx = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if idx is None:
+        return False
+    tokens = lines[idx].lstrip().split()
+    if not tokens:
+        return False
+
+    engine_ids = {engine.lower() for engine in runtime.engine_ids}
+    project_ids = {alias.lower() for alias in runtime.project_aliases()}
+
+    has_project = False
+    has_branch = False
+    consumed = 0
+
+    for token in tokens:
+        if token.startswith("/"):
+            name = token[1:]
+            if "@" in name:
+                name = name.split("@", 1)[0]
+            if not name:
+                break
+            key = name.lower()
+            if key in engine_ids:
+                consumed += 1
+                continue
+            if key in project_ids:
+                has_project = True
+                consumed += 1
+                continue
+            break
+        if token.startswith("@"):
+            value = token[1:]
+            if not value:
+                break
+            has_branch = True
+            consumed += 1
+            continue
+        break
+
+    if consumed == 0:
+        return False
+    return has_project and has_branch
+
+
 def _should_skip_message(message: SlackMessage, bot_user_id: str | None) -> bool:
     if not message.ts:
         return True
@@ -506,6 +554,8 @@ async def _handle_slack_message(
     thread_id = message.thread_ts if cfg.reply_in_thread and message.thread_ts else None
     if cfg.reply_in_thread and thread_id is None:
         thread_id = message.ts
+    if not _has_required_directives(text, cfg.runtime):
+        return
     thread_store = cfg.thread_store
     ambient_context = None
     if thread_store is not None and thread_id is not None:

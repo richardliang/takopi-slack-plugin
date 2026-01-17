@@ -44,6 +44,17 @@ channel_id = "C12345678"
 # session_mode = "stateless"  # or "thread"
 ```
 
+### Required Directives
+
+Slack messages must include both a project and worktree directive in the
+first line. Messages that do not match are ignored.
+
+Example:
+
+```
+@takopi /zkp2p-clients @feat/web/monad-usdt0 add a retry to the API call
+```
+
 ### Socket Mode (recommended)
 
 Socket Mode avoids polling and rate limits. Enable it in your Slack app and
