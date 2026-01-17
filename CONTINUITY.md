@@ -1,5 +1,5 @@
 Goal (incl. success criteria):
-- Implement Slack plugin features inspired by Discord: plugin command routing, per-thread state/overrides, and outbox/cancel/splitting, then publish a new release.
+- Allow thread replies without directives (reuse stored context) and publish a new release.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; `v0.0.11` tagged and pushed; new feature work starting.
+- In progress; `v0.0.12` tagged and pushed; adding thread reply context reuse.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -67,12 +67,16 @@ Done:
 - Added Slack slash command/shortcut routing for plugin commands plus built-in override controls.
 - Added cancel button blocks + interactive handler and enabled message splitting by default.
 - Updated README for slash command usage, shortcuts, cancel button, and message_overflow.
+- Bumped version to `0.0.12`, committed, pushed to `main`, and tagged `v0.0.12`.
 
 Now:
-- Bump version, commit, push, and tag to publish.
+- Bump version, commit, push, and tag to publish thread-reply context change.
+
+Now:
+- Await publish workflow and confirm release if needed.
 
 Next:
-- Validate publish workflow and share install/config commands if needed.
+- Provide install/config commands or troubleshoot if publish fails.
 
 Open questions (UNCONFIRMED if needed):
 - None.

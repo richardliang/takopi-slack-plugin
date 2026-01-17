@@ -542,6 +542,7 @@ async def _handle_slack_message(
     running_tasks: RunningTasks,
 ) -> None:
     channel_id = cfg.channel_id
+    is_thread_reply = message.thread_ts is not None
     thread_id = message.thread_ts or message.ts
     thread_store = cfg.thread_store
     try:
@@ -562,24 +563,38 @@ async def _handle_slack_message(
         )
         return
 
-    if directives.project is None or directives.branch is None:
-        return
-
-    context = RunContext(project=directives.project, branch=directives.branch)
+    context: RunContext | None = None
     engine_override = directives.engine
-    if thread_store is not None and thread_id is not None:
-        await thread_store.set_context(
+    prompt = directives.prompt
+    if directives.project is not None and directives.branch is not None:
+        context = RunContext(project=directives.project, branch=directives.branch)
+        if thread_store is not None and thread_id is not None:
+            await thread_store.set_context(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                context=context,
+            )
+            if engine_override is None:
+                engine_override = await thread_store.get_default_engine(
+                    channel_id=channel_id,
+                    thread_id=thread_id,
+                )
+    elif is_thread_reply and thread_store is not None and thread_id is not None:
+        context = await thread_store.get_context(
             channel_id=channel_id,
             thread_id=thread_id,
-            context=context,
         )
-        if engine_override is None:
+        if context is not None and engine_override is None:
             engine_override = await thread_store.get_default_engine(
                 channel_id=channel_id,
                 thread_id=thread_id,
             )
+        if directives.project is None and directives.branch is not None:
+            prompt = f"@{directives.branch} {prompt}".strip()
 
-    prompt = directives.prompt
+    if context is None:
+        return
+
     if not prompt.strip():
         return
 

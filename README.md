@@ -47,8 +47,11 @@ messages.
 
 ### Required Directives
 
-Slack messages must include both a project and worktree directive in the
+New root messages must include both a project and worktree directive in the
 first line. Messages that do not match are ignored.
+
+Thread replies reuse the stored context, so you can reply without repeating
+directives.
 
 Example:
 
@@ -107,6 +110,7 @@ Takopi always replies in threads and stores resume tokens per thread at
 
 Thread state also stores per-thread overrides for default engine/model/
 reasoning. Use the `/takopi` slash command to manage them.
+Replies inside a thread will automatically use that stored context.
 
 If you use a plugin allowlist, enable this distribution:
 
