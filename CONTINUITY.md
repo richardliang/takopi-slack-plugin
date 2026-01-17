@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6` and `v0.0.7` tagged and pushed; directive enforcement changes staged locally.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6`, `v0.0.7`, and `v0.0.8` tagged and pushed.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -44,9 +44,12 @@ Done:
 - Updated Slack onboarding/README for thread sessions.
 - Bumped version to `0.0.7`, committed, and pushed to `main`.
 - Created and pushed tag `v0.0.7`.
+- Enforced `/project` + `@branch` directives for Slack messages; updated README.
+- Bumped version to `0.0.8`, committed, and pushed to `main`.
+- Created and pushed tag `v0.0.8`.
 
 Now:
-- Commit strict `/project` + `@branch` directive requirement, bump to `0.0.8`, and tag/push.
+- Share new Slack message requirement and how to format messages.
 
 Next:
 - Confirm desired Slack UX beyond per-thread sessions (slash commands/app home) if needed.
