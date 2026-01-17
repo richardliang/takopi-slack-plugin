@@ -623,9 +623,9 @@ async def _run_polling_loop(
                 tg.start_soon(
                     _safe_handle_slack_message,
                     cfg,
-                    message=msg,
-                    text=cleaned,
-                    running_tasks=running_tasks,
+                    msg,
+                    cleaned,
+                    running_tasks,
                 )
             await anyio.sleep(cfg.poll_interval_s)
 
@@ -711,9 +711,9 @@ async def _run_socket_mode_loop(
                         tg.start_soon(
                             _safe_handle_slack_message,
                             cfg,
-                            message=msg,
-                            text=cleaned,
-                            running_tasks=running_tasks,
+                            msg,
+                            cleaned,
+                            running_tasks,
                         )
             except WebSocketException as exc:
                 logger.warning("slack.socket_failed", error=str(exc))
