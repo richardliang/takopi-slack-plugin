@@ -1,0 +1,32 @@
+[project]
+name = "takopi-slack-plugin"
+version = "0.0.1"
+description = "Slack transport plugin for Takopi."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "takopi contributors" }]
+requires-python = ">=3.14"
+dependencies = [
+  "anyio>=4.12.0",
+  "httpx>=0.28.1",
+  "questionary>=2.1.1",
+  "takopi>=0.20.0",
+]
+keywords = ["takopi", "slack", "transport", "plugin"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://zkp2p.xyz"
+
+[project.entry-points."takopi.transport_backends"]
+slack = "takopi_transport_slack.backend:BACKEND"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
