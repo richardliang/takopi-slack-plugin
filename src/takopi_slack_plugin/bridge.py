@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import anyio
 import websockets
@@ -30,6 +30,7 @@ from takopi.api import (
 )
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
+from .thread_sessions import SlackThreadSessionStore
 
 logger = get_logger(__name__)
 
@@ -100,6 +101,7 @@ class SlackBridgeConfig:
     require_mention: bool = False
     socket_mode: bool = False
     app_token: str | None = None
+    thread_store: SlackThreadSessionStore | None = None
 
 
 class SlackTransport:
@@ -393,6 +395,7 @@ async def _run_engine(
     context,
     engine_override,
     thread_id: str | None,
+    on_thread_known: Callable[[Any, anyio.Event], Awaitable[None]] | None = None,
 ) -> None:
     try:
         try:
@@ -467,6 +470,7 @@ async def _run_engine(
                 context_line=context_line,
                 strip_resume_line=runtime.is_resume_line,
                 running_tasks=running_tasks,
+                on_thread_known=on_thread_known,
             )
         finally:
             reset_run_base_dir(run_base_token)
@@ -502,11 +506,18 @@ async def _handle_slack_message(
     thread_id = message.thread_ts if cfg.reply_in_thread and message.thread_ts else None
     if cfg.reply_in_thread and thread_id is None:
         thread_id = message.ts
+    thread_store = cfg.thread_store
+    ambient_context = None
+    if thread_store is not None and thread_id is not None:
+        ambient_context = await thread_store.get_context(
+            channel_id=channel_id,
+            thread_id=thread_id,
+        )
     try:
         resolved = cfg.runtime.resolve_message(
             text=text,
             reply_text=None,
-            ambient_context=None,
+            ambient_context=ambient_context,
             chat_id=None,
         )
     except DirectiveError as exc:
@@ -520,9 +531,53 @@ async def _handle_slack_message(
         )
         return
 
+    if (
+        thread_store is not None
+        and thread_id is not None
+        and resolved.context is not None
+        and resolved.context_source == "directives"
+    ):
+        await thread_store.set_context(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            context=resolved.context,
+        )
+
     prompt = resolved.prompt
     if not prompt.strip():
         return
+
+    resume_token = resolved.resume_token
+    if thread_store is not None and thread_id is not None:
+        if resume_token is not None:
+            await thread_store.set_resume(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                token=resume_token,
+            )
+        else:
+            engine_for_session = cfg.runtime.resolve_engine(
+                engine_override=resolved.engine_override,
+                context=resolved.context,
+            )
+            resume_token = await thread_store.get_resume(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                engine=engine_for_session,
+            )
+
+    on_thread_known = None
+    if thread_store is not None and thread_id is not None:
+
+        async def _note_resume(token, done: anyio.Event) -> None:
+            _ = done
+            await thread_store.set_resume(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                token=token,
+            )
+
+        on_thread_known = _note_resume
 
     await _run_engine(
         exec_cfg=cfg.exec_cfg,
@@ -531,10 +586,11 @@ async def _handle_slack_message(
         channel_id=channel_id,
         user_msg_id=message.ts,
         text=prompt,
-        resume_token=resolved.resume_token,
+        resume_token=resume_token,
         context=resolved.context,
         engine_override=resolved.engine_override,
         thread_id=thread_id,
+        on_thread_known=on_thread_known,
     )
 
 

@@ -1,5 +1,5 @@
 Goal (incl. success criteria):
-- Cut release `v0.0.6` for `takopi-slack-plugin` and clarify Slack context shortcuts/thread behavior for users.
+- Add per-thread Slack session retention (context + resume) and release `v0.0.7`.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6` tagged and pushed.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; `v0.0.6` tagged and pushed; thread session changes staged locally.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -40,15 +40,16 @@ Done:
 - Reverted Slack context shortcut changes; `main` version back to `0.0.4`.
 - Bumped version to `0.0.6`, committed, and pushed to `main`.
 - Created and pushed tag `v0.0.6`.
+- Added Slack thread session store (resume + context) and wired config/bridge/back-end (pending commit).
 
 Now:
-- Answer user questions about Slack message shortcuts and thread context behavior.
+- Commit per-thread session changes, update README, and cut `v0.0.7` tag.
 
 Next:
-- If needed, implement message shortcuts or Slack app UI changes (slash command, modal, app home).
+- Confirm desired Slack UX beyond per-thread sessions (slash commands/app home) if needed.
 
 Open questions (UNCONFIRMED if needed):
-- Do you want persistent context without per-message directives, and if so should it be per-channel or per-thread (UNCONFIRMED)?
+- None.
 
 Working set (files/ids/commands):
 - CONTINUITY.md

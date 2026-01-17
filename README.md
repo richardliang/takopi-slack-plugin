@@ -41,6 +41,7 @@ channel_id = "C12345678"
 # reply_in_thread = false
 # require_mention = false
 # poll_interval_s = 1.0
+# session_mode = "stateless"  # or "thread"
 ```
 
 ### Socket Mode (recommended)
@@ -59,6 +60,19 @@ require_mention = true
 
 Enable Slack events for `message.channels`, `message.groups`, `message.im`,
 `message.mpim`, and/or `app_mention`, depending on your channel type.
+
+### Thread Sessions
+
+To retain context and resume tokens per Slack thread, enable session mode:
+
+```toml
+[transports.slack]
+session_mode = "thread"
+reply_in_thread = true
+```
+
+Takopi stores per-thread sessions at `~/.takopi/slack_thread_sessions_state.json`.
+The thread context updates when you set project/branch directives.
 
 If you use a plugin allowlist, enable this distribution:
 

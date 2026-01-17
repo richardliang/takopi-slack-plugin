@@ -23,6 +23,7 @@ from .bridge import SlackBridgeConfig, SlackPresenter, SlackTransport, run_main_
 from .client import SlackClient
 from .config import SlackTransportSettings
 from .onboarding import interactive_setup
+from .thread_sessions import SlackThreadSessionStore, resolve_sessions_path
 
 _CREATE_CONFIG_TITLE = "create a config"
 _CONFIGURE_SLACK_TITLE = "configure slack"
@@ -133,6 +134,11 @@ class SlackBackend(TransportBackend):
             presenter=presenter,
             final_notify=final_notify,
         )
+        thread_store = None
+        if settings.session_mode == "thread":
+            thread_store = SlackThreadSessionStore(
+                resolve_sessions_path(config_path)
+            )
         cfg = SlackBridgeConfig(
             client=client,
             runtime=runtime,
@@ -144,6 +150,7 @@ class SlackBackend(TransportBackend):
             require_mention=settings.require_mention,
             socket_mode=settings.socket_mode,
             app_token=settings.app_token,
+            thread_store=thread_store,
         )
 
         async def run_loop() -> None:

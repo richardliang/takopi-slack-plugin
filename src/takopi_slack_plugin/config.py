@@ -17,6 +17,7 @@ class SlackTransportSettings:
     reply_in_thread: bool = False
     require_mention: bool = False
     poll_interval_s: float = 1.0
+    session_mode: Literal["stateless", "thread"] = "stateless"
 
     @classmethod
     def from_config(
@@ -66,6 +67,18 @@ class SlackTransportSettings:
         poll_interval_s = _optional_float(
             config, "poll_interval_s", config_path=config_path, default=1.0
         )
+        session_mode = config.get("session_mode", "stateless")
+        if not isinstance(session_mode, str):
+            raise ConfigError(
+                f"Invalid `transports.slack.session_mode` in {config_path}; "
+                "expected a string."
+            )
+        session_mode = session_mode.strip()
+        if session_mode not in {"stateless", "thread"}:
+            raise ConfigError(
+                f"Invalid `transports.slack.session_mode` in {config_path}; "
+                "expected 'stateless' or 'thread'."
+            )
 
         return cls(
             bot_token=bot_token,
@@ -76,6 +89,7 @@ class SlackTransportSettings:
             reply_in_thread=reply_in_thread,
             require_mention=require_mention,
             poll_interval_s=poll_interval_s,
+            session_mode=session_mode,
         )
 
 

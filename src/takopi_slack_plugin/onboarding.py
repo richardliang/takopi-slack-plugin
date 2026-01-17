@@ -30,6 +30,10 @@ async def interactive_setup(*, force: bool) -> bool:
         "Require @bot mention?",
         default=False,
     ).ask()
+    session_mode = questionary.confirm(
+        "Remember sessions per thread?",
+        default=False,
+    ).ask()
 
     transports = _ensure_table(config, "transports", config_path=config_path)
     slack = _ensure_table(
@@ -42,6 +46,8 @@ async def interactive_setup(*, force: bool) -> bool:
     slack["channel_id"] = str(channel_id).strip()
     slack["reply_in_thread"] = bool(reply_in_thread)
     slack["require_mention"] = bool(require_mention)
+    if session_mode:
+        slack["session_mode"] = "thread"
     config["transport"] = "slack"
     write_config(config, config_path)
     return True
