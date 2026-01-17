@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; package prepared, needs commit and push to main.
+- In progress; changes pushed to main; repo remote indicates move.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -22,9 +22,10 @@ Done:
 - Built sdist and wheel via `uv build`.
 - Attempted `uv publish`; failed due to missing PyPI credentials/trusted publishing token.
 - Added GitHub Actions trusted publishing workflow at `.github/workflows/workflow.yml`.
+- Committed changes and pushed to `main` (remote reports repository moved to `github.com:richardliang/takopi-slack-plugin.git`).
 
 Now:
-- Commit changes and push to `main`.
+- Confirm remote URL update if needed; then trigger release/tag.
 
 Next:
 - Trigger release (tag or workflow dispatch) after PyPI trusted publishing is configured.
