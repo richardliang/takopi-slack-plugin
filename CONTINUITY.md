@@ -1,5 +1,5 @@
 Goal (incl. success criteria):
-- Extract Slack plugin logic from `../takopi`, package it for publishing, and write README instructions to start the plugin in Takopi after distribution.
+- Cut release `v0.0.6` for `takopi-slack-plugin` and clarify Slack context shortcuts/thread behavior for users.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote.
+- In progress; Slack context shortcut changes reverted on `main`; tag `v0.0.5` still exists on remote; new release requested.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -40,13 +40,13 @@ Done:
 - Reverted Slack context shortcut changes; `main` version back to `0.0.4`.
 
 Now:
-- Align on the desired Slack UI (slash command, modal, app home) before implementing.
+- Inspect Slack plugin for context retention/shortcuts; bump version to `0.0.6` and tag; answer user questions.
 
 Next:
-- Decide scope for Slack-friendly interface features and implementation plan.
+- If needed, implement message shortcuts or Slack app UI changes (slash command, modal, app home).
 
 Open questions (UNCONFIRMED if needed):
-- What “friendly interface” means for Slack (slash command, modal, app home, buttons) (UNCONFIRMED)?
+- Do you want persistent context without per-message directives, and if so should it be per-channel or per-thread (UNCONFIRMED)?
 
 Working set (files/ids/commands):
 - CONTINUITY.md
