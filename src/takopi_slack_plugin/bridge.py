@@ -494,7 +494,6 @@ async def _send_startup(cfg: SlackBridgeConfig) -> None:
 
 async def _handle_slack_message(
     cfg: SlackBridgeConfig,
-    *,
     message: SlackMessage,
     text: str,
     running_tasks: RunningTasks,
@@ -541,7 +540,6 @@ async def _handle_slack_message(
 
 async def _safe_handle_slack_message(
     cfg: SlackBridgeConfig,
-    *,
     message: SlackMessage,
     text: str,
     running_tasks: RunningTasks,

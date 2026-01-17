@@ -7,11 +7,11 @@ Constraints/Assumptions:
 - `../takopi` is expected to contain the current Slack plugin logic (UNCONFIRMED).
 
 Key decisions:
-- Use package name `takopi-slack-plugin` and project URL `zkp2p.xyz`; bump to `0.0.3` for Socket Mode bugfix release.
+- Use package name `takopi-slack-plugin` and project URL `zkp2p.xyz`; bump to `0.0.4` for Socket Mode bugfix release.
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; bugfix pushed and tag `v0.0.3` pushed, awaiting publish.
+- In progress; fixed Socket Mode TaskGroup signature bug, pending release.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -34,10 +34,10 @@ Done:
 - Created and pushed tag `v0.0.3`.
 
 Now:
-- Confirm publish workflow run on `v0.0.3` and reinstall package.
+- Commit and push Socket Mode signature fix; tag `v0.0.4`.
 
 Next:
-- Verify Socket Mode behavior with `0.0.3`.
+- Verify Socket Mode behavior with `0.0.4`.
 
 Open questions (UNCONFIRMED if needed):
 - Is Socket Mode enabled with app token and event subscriptions (`app_mention`/`message.*`) (UNCONFIRMED)?
