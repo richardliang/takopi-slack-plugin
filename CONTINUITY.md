@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; fixed Socket Mode TaskGroup signature bug, pending release.
+- In progress; tag `v0.0.4` pushed, awaiting publish and install.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -32,9 +32,11 @@ Done:
 - Fixed TaskGroup `start_soon` usage in Socket Mode/polling loops.
 - Bumped version to `0.0.3`, committed, and pushed to `main`.
 - Created and pushed tag `v0.0.3`.
+- Fixed Socket Mode handler signature; bumped to `0.0.4`, committed, and pushed to `main`.
+- Created and pushed tag `v0.0.4`.
 
 Now:
-- Commit and push Socket Mode signature fix; tag `v0.0.4`.
+- Confirm publish workflow run on `v0.0.4` and reinstall package.
 
 Next:
 - Verify Socket Mode behavior with `0.0.4`.
