@@ -11,7 +11,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- In progress; fixed Socket Mode TaskGroup argument bug, pending release.
+- In progress; bugfix pushed and tag `v0.0.3` pushed, awaiting publish.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -29,12 +29,15 @@ Done:
 - Rebuilt package with `UV_CACHE_DIR=/tmp/uv-cache` after cache permission error.
 - Bumped version to `0.0.2`, committed, and pushed Socket Mode changes to `main`.
 - Created and pushed tag `v0.0.2`.
+- Fixed TaskGroup `start_soon` usage in Socket Mode/polling loops.
+- Bumped version to `0.0.3`, committed, and pushed to `main`.
+- Created and pushed tag `v0.0.3`.
 
 Now:
-- Commit and push Socket Mode bugfix; tag `v0.0.3` to publish.
+- Confirm publish workflow run on `v0.0.3` and reinstall package.
 
 Next:
-- Verify PyPI release and Socket Mode behavior with `0.0.3`.
+- Verify Socket Mode behavior with `0.0.3`.
 
 Open questions (UNCONFIRMED if needed):
 - Is Socket Mode enabled with app token and event subscriptions (`app_mention`/`message.*`) (UNCONFIRMED)?
