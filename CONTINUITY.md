@@ -1,5 +1,5 @@
 Goal (incl. success criteria):
-- Add instruction to ignore worktree directories when committing/pushing in global AGENTS and example.
+- Merge PR #1 and publish version `0.1.1`.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
@@ -12,7 +12,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- PR branch updated with worktree ignore guidance; global AGENTS updated too.
+- PR already merged; local main updated. Need to bump to `0.1.1`, tag, and publish.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -90,10 +90,10 @@ Done:
 - Pushed commit updating `docs/AGENTS.example.md` to PR branch.
 
 Now:
-- Reply with update confirmation.
+- Bump `pyproject.toml` version to `0.1.1`, commit, tag `v0.1.1`, push.
 
 Next:
-- None.
+- Verify publish workflow.
 
 Open questions (UNCONFIRMED if needed):
 - None.
