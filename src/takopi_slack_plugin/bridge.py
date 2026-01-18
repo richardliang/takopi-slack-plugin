@@ -574,7 +574,7 @@ async def _handle_slack_message(
     context: RunContext | None = None
     engine_override = directives.engine
     prompt = directives.prompt
-    if directives.project is not None and directives.branch is not None:
+    if directives.project is not None:
         context = RunContext(project=directives.project, branch=directives.branch)
         if thread_store is not None and thread_id is not None:
             await thread_store.set_context(
@@ -592,16 +592,22 @@ async def _handle_slack_message(
             channel_id=channel_id,
             thread_id=thread_id,
         )
-        if context is not None and engine_override is None:
-            engine_override = await thread_store.get_default_engine(
-                channel_id=channel_id,
-                thread_id=thread_id,
-            )
-        if directives.project is None and directives.branch is not None:
-            prompt = f"@{directives.branch} {prompt}".strip()
+        if context is not None:
+            if directives.branch is not None and context.project is not None:
+                context = RunContext(project=context.project, branch=directives.branch)
+                await thread_store.set_context(
+                    channel_id=channel_id,
+                    thread_id=thread_id,
+                    context=context,
+                )
+            if engine_override is None:
+                engine_override = await thread_store.get_default_engine(
+                    channel_id=channel_id,
+                    thread_id=thread_id,
+                )
 
-    if context is None:
-        return
+    if directives.project is None and directives.branch is not None and context is None:
+        prompt = f"@{directives.branch} {prompt}".strip()
 
     if not prompt.strip():
         return

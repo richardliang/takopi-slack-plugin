@@ -77,10 +77,10 @@ takopi --transport slack
 
 if you already set `transport = "slack"`, `takopi` is enough.
 
-root messages must include both a project and worktree directive in the first
-line. messages that do not match are ignored.
+directives are optional. use `/project` and `@branch` in the first line to
+target a project or worktree; otherwise the run uses the default takopi context.
 
-example:
+example (worktree):
 
 ```
 @takopi /zkp2p-clients @feat/web/monad-usdt0 add a retry to the api call
@@ -104,6 +104,9 @@ command identified by `takopi:<plugin_id>`.
 
 progress messages include a cancel button; enable interactivity & shortcuts so
 clicks are delivered in socket mode.
+
+for opinionated gating, see `docs/AGENTS.example.md` and `docs/GATING_README.md`, and
+customize `~/.codex/AGENTS.md`.
 
 ## license
 

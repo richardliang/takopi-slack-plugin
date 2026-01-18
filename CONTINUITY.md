@@ -1,17 +1,18 @@
 Goal (incl. success criteria):
-- Publish stable release `v0.1.0` of takopi-slack-plugin.
+- Add instruction to ignore worktree directories when committing/pushing in global AGENTS and example.
 
 Constraints/Assumptions:
 - Follow workspace instructions in `AGENTS.md`, including Continuity Ledger updates each turn.
 - Use ASCII unless existing files require Unicode.
 - `../takopi` is expected to contain the current Slack plugin logic (UNCONFIRMED).
+- Gating policy should live in global `~/.codex/AGENTS.md` and docs, not enforced in code.
 
 Key decisions:
 - Use package name `takopi-slack-plugin` and project URL `zkp2p.xyz`; bump to `0.0.4` for Socket Mode bugfix release.
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- `v0.1.0` tagged and pushed; publish workflow pending.
+- PR branch updated with worktree ignore guidance; global AGENTS updated too.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -75,12 +76,24 @@ Done:
 - Bumped version to `0.0.14`, committed docs/refactor changes, pushed to `main`, and tagged `v0.0.14`.
 - Fixed anyio TaskGroup.start_soon kwargs crash; bumped to `0.0.15`, committed, pushed to `main`, and tagged `v0.0.15`.
 - Bumped version to `0.1.0`, committed, pushed to `main`, and tagged `v0.1.0`.
+- Added repo `AGENTS.md` with worktree sync policy (pending removal per user).
+- Added worktree sync policy to `/home/ubuntu/.codex/AGENTS.md`.
+- Removed repo `AGENTS.md`.
+- Updated README with optional directives and AGENTS customization note.
+- Removed read-only gating/prefix in Slack bridge and allowed runs without directives.
+- Updated README to describe optional directives and link to gating docs.
+- Added `AGENTS.example.md` and `GATING_README.md`.
+- Removed gating policy from `/home/ubuntu/.codex/AGENTS.md`.
+- Merged opinionated gating into `/home/ubuntu/.codex/AGENTS.md`.
+- Moved gating docs into `docs/` and updated README/doc links.
+- Added ignore-worktrees instruction to global AGENTS and example.
+- Pushed commit updating `docs/AGENTS.example.md` to PR branch.
 
 Now:
-- Wait for publish workflow to complete for `v0.1.0`.
+- Reply with update confirmation.
 
 Next:
-- Verify publish success and have user update to `takopi-slack-plugin==0.1.0`.
+- None.
 
 Open questions (UNCONFIRMED if needed):
 - None.
@@ -95,3 +108,6 @@ Working set (files/ids/commands):
 - src/takopi_slack_plugin/client.py
 - src/takopi_slack_plugin/config.py
 - /tmp/takopi-discord
+- /home/ubuntu/.codex/AGENTS.md
+- docs/AGENTS.example.md
+- docs/GATING_README.md
