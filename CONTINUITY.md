@@ -12,7 +12,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- Global AGENTS updated; docs moved; README updated; need to commit/push PR.
+- PR opened for gating docs updates; global AGENTS merged with opinionated policy.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -88,10 +88,10 @@ Done:
 - Moved gating docs into `docs/` and updated README/doc links.
 
 Now:
-- Commit changes and open PR.
+- Await user feedback on PR.
 
 Next:
-- Share PR link/details.
+- None.
 
 Open questions (UNCONFIRMED if needed):
 - None.
