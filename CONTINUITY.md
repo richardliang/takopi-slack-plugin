@@ -12,7 +12,7 @@ Key decisions:
 - Rename Python package to `takopi_slack_plugin` to align with the new distribution name.
 
 State:
-- Global AGENTS and example updated with worktree ignore guidance.
+- PR branch updated with worktree ignore guidance; global AGENTS updated too.
 
 Done:
 - Located Slack transport source and packaging in `../takopi/packages/takopi-transport-slack`.
@@ -87,6 +87,7 @@ Done:
 - Merged opinionated gating into `/home/ubuntu/.codex/AGENTS.md`.
 - Moved gating docs into `docs/` and updated README/doc links.
 - Added ignore-worktrees instruction to global AGENTS and example.
+- Pushed commit updating `docs/AGENTS.example.md` to PR branch.
 
 Now:
 - Reply with update confirmation.
