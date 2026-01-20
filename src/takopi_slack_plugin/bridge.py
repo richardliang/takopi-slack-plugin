@@ -44,6 +44,12 @@ INLINE_COMMAND_RE = re.compile(
     r"(^|\s)(?P<token>/(?P<cmd>[a-z0-9_]{1,32}))",
     re.IGNORECASE,
 )
+THREAD_SEND_ERRORS = {
+    "invalid_thread_ts",
+    "invalid_timestamp",
+    "message_not_found",
+    "thread_ts_not_found",
+}
 
 
 class SlackPresenter:
@@ -252,14 +258,41 @@ class SlackTransport:
         blocks: list[dict[str, Any]] | None,
         thread_ts: str | None,
     ) -> SlackMessage:
+        async def execute() -> SlackMessage:
+            try:
+                return await self._client.post_message(
+                    channel_id=channel_id,
+                    text=text,
+                    blocks=blocks,
+                    thread_ts=thread_ts,
+                )
+            except SlackApiError as exc:
+                if thread_ts is None:
+                    logger.warning(
+                        "slack.send_failed",
+                        channel_id=channel_id,
+                        error=exc.error,
+                        status_code=exc.status_code,
+                    )
+                    raise
+                logger.warning(
+                    "slack.thread_send_failed",
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    error=exc.error,
+                    status_code=exc.status_code,
+                )
+                if exc.error not in THREAD_SEND_ERRORS:
+                    raise
+                return await self._client.post_message(
+                    channel_id=channel_id,
+                    text=text,
+                    blocks=blocks,
+                )
+
         key = self._next_send_key(channel_id)
         op = OutboxOp(
-            execute=lambda: self._client.post_message(
-                channel_id=channel_id,
-                text=text,
-                blocks=blocks,
-                thread_ts=thread_ts,
-            ),
+            execute=execute,
             priority=SEND_PRIORITY,
             queued_at=time.monotonic(),
             channel_id=channel_id,
