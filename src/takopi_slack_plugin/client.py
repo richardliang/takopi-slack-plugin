@@ -27,6 +27,7 @@ class SlackApiError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class SlackAuth:
     user_id: str
+    user_name: str | None = None
     team_id: str | None = None
     bot_id: str | None = None
 
@@ -91,8 +92,12 @@ class SlackClient:
         user_id = payload.get("user_id")
         if not isinstance(user_id, str) or not user_id:
             raise SlackApiError("Missing user_id in auth.test response")
+        user_name = payload.get("user")
+        if not isinstance(user_name, str) or not user_name.strip():
+            user_name = None
         return SlackAuth(
             user_id=user_id,
+            user_name=user_name,
             team_id=payload.get("team_id"),
             bot_id=payload.get("bot_id"),
         )

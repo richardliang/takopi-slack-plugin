@@ -517,11 +517,45 @@ def _mention_regex(bot_user_id: str) -> re.Pattern[str]:
     return re.compile(rf"<@{escaped}(\|[^>]+)?>")
 
 
-def _strip_bot_mention(text: str, *, bot_user_id: str | None) -> str:
+_BOT_TOKEN_STRIP = "*_~`"
+
+
+def _normalize_bot_token(token: str) -> str:
+    trimmed = token.strip().strip(_BOT_TOKEN_STRIP).strip()
+    if trimmed.startswith("@"):
+        trimmed = trimmed[1:]
+    trimmed = trimmed.strip(_BOT_TOKEN_STRIP).strip(".,:;")
+    return trimmed.lower()
+
+
+def _strip_bot_name(text: str, *, bot_name: str) -> str:
+    tokens = text.split()
+    if not tokens:
+        return text
+    target = bot_name.lower()
+    while tokens:
+        if _normalize_bot_token(tokens[0]) == target:
+            tokens.pop(0)
+            continue
+        if _normalize_bot_token(tokens[-1]) == target:
+            tokens.pop()
+            continue
+        break
+    return " ".join(tokens).strip()
+
+
+def _strip_bot_mention(
+    text: str,
+    *,
+    bot_user_id: str | None,
+    bot_name: str | None,
+) -> str:
     cleaned = text
     if bot_user_id is not None:
         pattern = _mention_regex(bot_user_id)
         cleaned = pattern.sub("", text)
+    if bot_name:
+        cleaned = _strip_bot_name(cleaned, bot_name=bot_name)
     return cleaned.strip()
 
 
@@ -1411,6 +1445,7 @@ async def _run_socket_loop(
     cfg: SlackBridgeConfig,
     *,
     bot_user_id: str | None,
+    bot_name: str | None,
 ) -> None:
     if not cfg.app_token:
         raise ConfigError(
@@ -1502,6 +1537,7 @@ async def _run_socket_loop(
                         cleaned = _strip_bot_mention(
                             msg.text or "",
                             bot_user_id=bot_user_id,
+                            bot_name=bot_name,
                         )
                         if not cleaned.strip():
                             continue
@@ -1531,10 +1567,12 @@ async def run_main_loop(
     _ = watch_config, default_engine_override, transport_id, transport_config
     await _send_startup(cfg)
     bot_user_id: str | None = None
+    bot_name: str | None = None
     try:
         auth = await cfg.client.auth_test()
         bot_user_id = auth.user_id
+        bot_name = auth.user_name
     except SlackApiError as exc:
         logger.warning("slack.auth_test_failed", error=str(exc))
 
-    await _run_socket_loop(cfg, bot_user_id=bot_user_id)
+    await _run_socket_loop(cfg, bot_user_id=bot_user_id, bot_name=bot_name)
