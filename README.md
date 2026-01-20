@@ -44,7 +44,8 @@ create a slack app and enable socket mode.
 3. enable events for `app_mention` plus the right `message.*` event for your
    channel type
 4. enable interactivity & shortcuts, create a slash command (for example
-   `/takopi`), and optionally add a message shortcut with callback id
+   `/takopi`), and optionally add dedicated commands like `/takopi-preview`
+   for common plugins plus message shortcuts with callback id
    `takopi:<plugin_id>`
 5. invite the bot to the target channel
 
@@ -80,6 +81,15 @@ if you already set `transport = "slack"`, `takopi` is enough.
 directives are optional. use `/project` and `@branch` in the first line to
 target a project or worktree; otherwise the run uses the default takopi context.
 
+inline command mode: if the remaining prompt includes a `/command`, the slack
+bridge dispatches it as a command instead of running the engine.
+
+example (inline command):
+
+```
+@takopi /zkp2p-clients @feat/login /preview start 3000 --dev "pnpm --filter @zkp2p/web dev -- --host 127.0.0.1 --port {port}"
+```
+
 example (worktree):
 
 ```
@@ -89,7 +99,7 @@ example (worktree):
 thread replies reuse stored context, so you can reply without repeating
 directives.
 
-slash command built-ins:
+slash command built-ins (via `/takopi <command>` or `/takopi-<command>`):
 
 ```
 /takopi status

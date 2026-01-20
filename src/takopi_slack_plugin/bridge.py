@@ -24,6 +24,8 @@ from takopi.api import (
     get_logger,
 )
 from takopi.directives import parse_directives
+from takopi.ids import RESERVED_COMMAND_IDS
+from takopi.plugins import COMMAND_GROUP, list_ids
 from takopi.runners.run_options import EngineRunOptions
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
@@ -38,6 +40,10 @@ logger = get_logger(__name__)
 MAX_SLACK_TEXT = 3900
 MAX_BLOCK_TEXT = 2800
 CANCEL_ACTION_ID = "takopi-slack:cancel"
+INLINE_COMMAND_RE = re.compile(
+    r"(^|\s)(?P<token>/(?P<cmd>[a-z0-9_]{1,32}))",
+    re.IGNORECASE,
+)
 
 
 class SlackPresenter:
@@ -612,6 +618,63 @@ async def _handle_slack_message(
     if not prompt.strip():
         return
 
+    inline_command = None
+    if "/" in prompt:
+        allowed_commands = set(
+            list_ids(
+                COMMAND_GROUP,
+                allowlist=cfg.runtime.allowlist,
+                reserved_ids=RESERVED_COMMAND_IDS,
+            )
+        )
+        inline_command = _extract_inline_command(
+            prompt, allowed_commands=allowed_commands
+        )
+    if inline_command:
+        command_id, args_text = inline_command
+        thread_id = _session_thread_id(channel_id, message.thread_ts or message.ts)
+        command_context = None
+        if thread_store is not None:
+            command_context = await _resolve_command_context(
+                cfg,
+                channel_id=channel_id,
+                thread_id=thread_id,
+            )
+        default_context = context
+        if default_context is None and command_context is not None:
+            default_context = command_context.default_context
+        default_engine_override = engine_override
+        if default_engine_override is None and command_context is not None:
+            default_engine_override = command_context.default_engine_override
+
+        reply_ref = MessageRef(
+            channel_id=channel_id,
+            message_id=message.ts,
+            thread_id=thread_id,
+        )
+        handled = await dispatch_command(
+            cfg,
+            command_id=command_id,
+            args_text=args_text,
+            full_text=text,
+            channel_id=channel_id,
+            message_id=message.ts,
+            thread_id=thread_id,
+            reply_ref=reply_ref,
+            reply_text=None,
+            running_tasks=running_tasks,
+            on_thread_known=command_context.on_thread_known
+            if command_context is not None
+            else None,
+            default_engine_override=default_engine_override,
+            default_context=default_context,
+            engine_overrides_resolver=command_context.engine_overrides_resolver
+            if command_context is not None
+            else None,
+        )
+        if handled:
+            return
+
     # Router access avoids re-parsing directives in runtime.resolve_message.
     resume_token = cfg.runtime._router.resolve_resume(prompt, None)
     engine_for_session = cfg.runtime.resolve_engine(
@@ -701,6 +764,41 @@ def _extract_command_text(tokens: tuple[str, ...], raw_text: str) -> tuple[str, 
     command_id = head.lstrip("/").lower()
     args_text = raw_text[len(head) :].strip()
     return command_id, args_text
+
+
+def _extract_inline_command(
+    prompt: str, *, allowed_commands: set[str]
+) -> tuple[str, str] | None:
+    if not prompt.strip() or not allowed_commands or "/" not in prompt:
+        return None
+    for match in INLINE_COMMAND_RE.finditer(prompt):
+        command_id = match.group("cmd").lower()
+        if command_id not in allowed_commands:
+            continue
+        command_text = prompt[match.start("token") :].lstrip()
+        tokens = split_command_args(command_text)
+        if not tokens:
+            continue
+        parsed_id, args_text = _extract_command_text(tokens, command_text)
+        if parsed_id.lower() != command_id:
+            continue
+        return parsed_id, args_text
+    return None
+
+
+def _extract_slash_payload_command(command: object) -> str | None:
+    if not isinstance(command, str):
+        return None
+    value = command.strip()
+    if not value:
+        return None
+    if value.startswith("/"):
+        value = value[1:]
+    lowered = value.lower()
+    for prefix in ("takopi-", "takopi_"):
+        if lowered.startswith(prefix) and len(lowered) > len(prefix):
+            return lowered[len(prefix) :]
+    return None
 
 
 def _parse_thread_ts(value: object) -> str | None:
@@ -802,21 +900,27 @@ async def _handle_slash_command(
     if not isinstance(channel_id, str) or channel_id != cfg.channel_id:
         return
     text = payload.get("text") or ""
+    if not isinstance(text, str):
+        text = ""
     response_url = payload.get("response_url")
     thread_ts = _parse_thread_ts(payload.get("thread_ts") or payload.get("message_ts"))
     thread_id = _session_thread_id(channel_id, thread_ts)
 
-    tokens = split_command_args(text)
-    if not tokens:
-        await _respond_ephemeral(
-            cfg,
-            response_url=response_url,
-            channel_id=channel_id,
-            text=_slash_usage(),
-        )
-        return
-
-    command_id, args_text = _extract_command_text(tokens, text)
+    command_id = _extract_slash_payload_command(payload.get("command"))
+    if command_id:
+        args_text = text.strip()
+        tokens = split_command_args(args_text)
+    else:
+        tokens = split_command_args(text)
+        if not tokens:
+            await _respond_ephemeral(
+                cfg,
+                response_url=response_url,
+                channel_id=channel_id,
+                text=_slash_usage(),
+            )
+            return
+        command_id, args_text = _extract_command_text(tokens, text)
     if command_id in {"help", "usage"}:
         await _respond_ephemeral(
             cfg,
@@ -1206,6 +1310,8 @@ def _slash_usage() -> str:
     return (
         "usage:\n"
         "/takopi <command> [args]\n\n"
+        "or register a dedicated slash command like /takopi-preview and pass args\n"
+        "as the text after the command.\n\n"
         "built-ins:\n"
         "/takopi status\n"
         "/takopi engine <engine|clear>\n"
