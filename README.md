@@ -11,14 +11,16 @@ stores per-thread context + resume tokens.
 - slash commands + message shortcuts for overrides and plugin commands
 - cancel button on progress messages
 - message overflow: split or trim long responses
+- file transfer (upload/download) with optional auto-save
 
 ## requirements
 
 - python 3.14+
 - takopi >=0.20.0
 - slack bot token with `chat:write`, `commands`, `app_mentions:read`, and
-  the matching history scopes for your channel type (`channels:history`,
-  `groups:history`, `im:history`, `mpim:history`)
+  `files:read`, `files:write`, and the matching history scopes for your
+  channel type (`channels:history`, `groups:history`, `im:history`,
+  `mpim:history`)
 - slack app token (`xapp-`) with `connections:write`
 
 ## install
@@ -59,9 +61,19 @@ bot_token = "xoxb-..."
 app_token = "xapp-..."
 channel_id = "C12345678"
 message_overflow = "split"
+
+[transports.slack.files]
+enabled = true
+auto_put = true
+auto_put_mode = "upload" # upload | prompt
+uploads_dir = "incoming"
+allowed_user_ids = ["U12345678"]
+deny_globs = [".git/**", ".env", ".envrc", "**/*.pem", "**/.ssh/**"]
 ```
 
 set `message_overflow = "trim"` if you prefer truncation instead of followups.
+file transfer is disabled by default; omit `allowed_user_ids` to allow anyone
+in the channel.
 
 if you use a plugin allowlist, enable this distribution:
 
@@ -109,6 +121,21 @@ slash command built-ins (via `/takopi <command>` or `/takopi-<command>`):
 /takopi reasoning <engine> <level|clear>
 /takopi session clear
 ```
+
+file transfer:
+
+```
+@takopi /file put <path>
+@takopi /file put --force <path>
+@takopi /file get <path>
+```
+
+attach a file and add the `/file put` line as the caption. omit `<path>` to
+save into `uploads_dir`. use `/takopi file get <path>` if you prefer slash
+commands. captions without `/file` require `auto_put_mode = "prompt"` to run
+as a prompt; otherwise Slack replies with usage. set `auto_put_mode = "prompt"`
+to append `[uploaded file: ...]` lines to the caption prompt. size limits:
+uploads 20 MiB, downloads 50 MiB.
 
 message shortcuts pass the selected message text as arguments to the plugin
 command identified by `takopi:<plugin_id>`.

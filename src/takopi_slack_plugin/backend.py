@@ -144,6 +144,7 @@ class SlackBackend(TransportBackend):
             app_token=settings.app_token,
             startup_msg=startup_msg,
             exec_cfg=exec_cfg,
+            files=settings.files,
             thread_store=thread_store,
         )
 

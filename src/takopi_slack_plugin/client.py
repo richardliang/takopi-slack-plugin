@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 import anyio
 import httpx
@@ -33,6 +33,37 @@ class SlackAuth:
 
 
 @dataclass(frozen=True, slots=True)
+class SlackFile:
+    id: str
+    name: str | None
+    title: str | None
+    mimetype: str | None
+    size: int | None
+    url_private: str | None
+    url_private_download: str | None
+    mode: str | None
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> "SlackFile" | None:
+        file_id = payload.get("id")
+        if not isinstance(file_id, str) or not file_id:
+            return None
+        size = payload.get("size")
+        if not isinstance(size, int):
+            size = None
+        return cls(
+            id=file_id,
+            name=_maybe_str(payload.get("name")),
+            title=_maybe_str(payload.get("title")),
+            mimetype=_maybe_str(payload.get("mimetype")),
+            size=size,
+            url_private=_maybe_str(payload.get("url_private")),
+            url_private_download=_maybe_str(payload.get("url_private_download")),
+            mode=_maybe_str(payload.get("mode")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SlackMessage:
     ts: str
     text: str | None
@@ -40,9 +71,11 @@ class SlackMessage:
     bot_id: str | None
     subtype: str | None
     thread_ts: str | None
+    files: tuple[SlackFile, ...] = ()
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "SlackMessage":
+        files = _parse_files(payload)
         return cls(
             ts=str(payload.get("ts") or ""),
             text=payload.get("text"),
@@ -50,6 +83,7 @@ class SlackMessage:
             bot_id=payload.get("bot_id"),
             subtype=payload.get("subtype"),
             thread_ts=payload.get("thread_ts"),
+            files=files,
         )
 
 
@@ -184,6 +218,118 @@ class SlackClient:
                 status_code=response.status_code,
                 body=response.text,
             )
+
+    async def download_file(self, *, url: str) -> bytes:
+        while True:
+            try:
+                response = await self._client.get(url)
+            except httpx.HTTPError as exc:
+                logger.warning("slack.network_error", error=str(exc))
+                raise SlackApiError("Slack request failed") from exc
+
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = int(retry_after) if retry_after is not None else 1
+                except ValueError:
+                    delay = 1
+                logger.info("slack.rate_limited", retry_after=delay)
+                await anyio.sleep(delay)
+                continue
+
+            if response.status_code >= 400:
+                raise SlackApiError(
+                    f"Slack HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+
+            return response.content
+
+    async def upload_file(
+        self,
+        *,
+        channel_id: str,
+        filename: str,
+        content: bytes,
+        thread_ts: str | None = None,
+        initial_comment: str | None = None,
+    ) -> SlackFile | None:
+        data: dict[str, Any] = {"channels": channel_id}
+        if thread_ts:
+            data["thread_ts"] = thread_ts
+        if initial_comment:
+            data["initial_comment"] = initial_comment
+        files = {"file": (filename, content)}
+
+        while True:
+            try:
+                response = await self._client.post(
+                    "/files.upload", data=data, files=files
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("slack.network_error", error=str(exc))
+                raise SlackApiError("Slack request failed") from exc
+
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = int(retry_after) if retry_after is not None else 1
+                except ValueError:
+                    delay = 1
+                logger.info("slack.rate_limited", retry_after=delay)
+                await anyio.sleep(delay)
+                continue
+
+            if response.status_code >= 400:
+                raise SlackApiError(
+                    f"Slack HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise SlackApiError("Slack response was not JSON") from exc
+
+            if payload.get("ok") is not True:
+                error = payload.get("error")
+                raise SlackApiError(
+                    f"Slack API error: {error}",
+                    error=error,
+                    status_code=response.status_code,
+                )
+            file_payload = payload.get("file")
+            if not isinstance(file_payload, dict):
+                return None
+            return SlackFile.from_api(file_payload)
+
+
+def _parse_files(payload: dict[str, Any]) -> tuple[SlackFile, ...]:
+    candidates: Iterable[object] = ()
+    files_value = payload.get("files")
+    if isinstance(files_value, list):
+        candidates = files_value
+    elif isinstance(files_value, dict):
+        candidates = (files_value,)
+    else:
+        file_value = payload.get("file")
+        if isinstance(file_value, dict):
+            candidates = (file_value,)
+    parsed: list[SlackFile] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        file = SlackFile.from_api(item)
+        if file is not None:
+            parsed.append(file)
+    return tuple(parsed)
+
+
+def _maybe_str(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
 
 async def _request_with_client(
     client: httpx.AsyncClient,

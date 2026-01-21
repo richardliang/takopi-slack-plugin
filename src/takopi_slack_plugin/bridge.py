@@ -4,6 +4,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs
 
@@ -30,7 +31,23 @@ from takopi.runners.run_options import EngineRunOptions
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
 from .commands import dispatch_command, split_command_args
+from .config import SlackFileTransferSettings
 from .engine import run_engine, send_plain
+from .file_transfer import (
+    MAX_DOWNLOAD_BYTES,
+    MAX_UPLOAD_BYTES,
+    ZipTooLargeError,
+    default_upload_name,
+    default_upload_path,
+    deny_reason,
+    format_bytes,
+    normalize_relative_path,
+    parse_file_command,
+    parse_file_prompt,
+    resolve_path_within_root,
+    write_bytes_atomic,
+    zip_directory,
+)
 from .outbox import DELETE_PRIORITY, EDIT_PRIORITY, SEND_PRIORITY, OutboxOp, SlackOutbox
 from .overrides import REASONING_LEVELS, is_valid_reasoning_level, supports_reasoning
 from .thread_sessions import SlackThreadSessionStore
@@ -120,6 +137,7 @@ class SlackBridgeConfig:
     app_token: str
     startup_msg: str
     exec_cfg: ExecBridgeConfig
+    files: SlackFileTransferSettings
     thread_store: SlackThreadSessionStore | None = None
 
 
@@ -591,7 +609,7 @@ def _coerce_socket_payload(payload: object) -> dict[str, Any] | None:
 def _should_skip_message(message: SlackMessage, bot_user_id: str | None) -> bool:
     if not message.ts:
         return True
-    if message.subtype is not None:
+    if message.subtype not in {None, "file_share"}:
         return True
     if message.bot_id is not None:
         return True
@@ -600,7 +618,8 @@ def _should_skip_message(message: SlackMessage, bot_user_id: str | None) -> bool
     if bot_user_id is not None and message.user == bot_user_id:
         return True
     if not message.text or not message.text.strip():
-        return True
+        if not message.files:
+            return True
     return False
 
 
@@ -629,7 +648,7 @@ async def _handle_slack_message(
     try:
         # Reuse Takopi's directive parser to avoid double parsing.
         directives = parse_directives(
-            text,
+            text or "",
             engine_ids=cfg.runtime.engine_ids,
             projects=cfg.runtime._projects,
         )
@@ -681,6 +700,28 @@ async def _handle_slack_message(
 
     if directives.project is None and directives.branch is not None and context is None:
         prompt = f"@{directives.branch} {prompt}".strip()
+
+    file_handled = await _maybe_handle_file_command(
+        cfg,
+        message,
+        prompt=prompt,
+        context=context,
+        thread_id=thread_id,
+    )
+    if file_handled:
+        return
+
+    handled_upload, prompt_override = await _maybe_handle_file_upload(
+        cfg,
+        message,
+        prompt=prompt,
+        context=context,
+        thread_id=thread_id,
+    )
+    if handled_upload:
+        if prompt_override is None:
+            return
+        prompt = prompt_override
 
     if not prompt.strip():
         return
@@ -806,6 +847,854 @@ async def _safe_handle_slack_message(
             error=str(exc),
             error_type=exc.__class__.__name__,
         )
+
+
+FILE_PUT_USAGE = "usage: `/file put <path>`"
+FILE_GET_USAGE = "usage: `/file get <path>`"
+
+
+@dataclass(slots=True)
+class _FilePutPlan:
+    run_root: Path
+    path_value: str | None
+    force: bool
+
+
+@dataclass(slots=True)
+class _FilePutResult:
+    name: str
+    rel_path: Path | None
+    size: int | None
+    error: str | None
+
+
+@dataclass(slots=True)
+class _SavedFilePutGroup:
+    base_dir: Path | None
+    saved: list[_FilePutResult]
+    failed: list[_FilePutResult]
+
+
+def _format_context_label(
+    runtime: TransportRuntime, context: RunContext | None
+) -> str:
+    if context is None or context.project is None:
+        return "none"
+    project = runtime.project_alias_for_key(context.project)
+    if context.branch:
+        return f"{project} @{context.branch}"
+    return project
+
+
+def _extract_file_command_args(prompt: str) -> str | None:
+    stripped = prompt.lstrip()
+    if not stripped.startswith("/file"):
+        return None
+    remainder = stripped[len("/file") :]
+    if remainder and not remainder[0].isspace():
+        return None
+    return remainder.strip()
+
+
+async def _maybe_handle_file_command(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    prompt: str,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> bool:
+    args_text = _extract_file_command_args(prompt)
+    if args_text is None:
+        return False
+    if not cfg.files.enabled:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text="file transfer disabled; enable `[transports.slack.files]`.",
+            notify=False,
+        )
+        return True
+    if not await _check_file_permissions(
+        cfg,
+        user_id=message.user,
+        user_msg_id=message.ts,
+        thread_id=thread_id,
+    ):
+        return True
+    command, rest, error = parse_file_command(args_text)
+    if error is not None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=error,
+            notify=False,
+        )
+        return True
+    if command == "put":
+        await _handle_file_put(
+            cfg,
+            message,
+            args_text=rest,
+            context=context,
+            thread_id=thread_id,
+        )
+    else:
+        await _handle_file_get(
+            cfg,
+            message,
+            args_text=rest,
+            context=context,
+            thread_id=thread_id,
+        )
+    return True
+
+
+async def _maybe_handle_file_upload(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    prompt: str,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> tuple[bool, str | None]:
+    if not message.files:
+        return False, None
+    if not cfg.files.enabled:
+        return True, None
+    if not await _check_file_permissions(
+        cfg,
+        user_id=message.user,
+        user_msg_id=message.ts,
+        thread_id=thread_id,
+    ):
+        return True, None
+    if not cfg.files.auto_put:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=FILE_PUT_USAGE,
+            notify=False,
+        )
+        return True, None
+
+    caption_text = prompt.strip()
+    if caption_text:
+        if cfg.files.auto_put_mode != "prompt":
+            await send_plain(
+                cfg.exec_cfg,
+                channel_id=cfg.channel_id,
+                user_msg_id=message.ts,
+                thread_id=thread_id,
+                text=FILE_PUT_USAGE,
+                notify=False,
+            )
+            return True, None
+        annotations: list[str] = []
+        if len(message.files) == 1:
+            saved = await _save_file_put(
+                cfg,
+                message,
+                args_text="",
+                context=context,
+                thread_id=thread_id,
+            )
+            if saved is None or saved.rel_path is None:
+                return True, None
+            annotations.append(f"[uploaded file: {saved.rel_path.as_posix()}]")
+        else:
+            saved_group = await _save_file_put_group(
+                cfg,
+                message,
+                args_text="",
+                context=context,
+                thread_id=thread_id,
+            )
+            if saved_group is None:
+                return True, None
+            if saved_group.failed:
+                failure_text = _format_file_put_failures(saved_group.failed)
+                if failure_text is None:
+                    failure_text = "failed to upload files."
+                await send_plain(
+                    cfg.exec_cfg,
+                    channel_id=cfg.channel_id,
+                    user_msg_id=message.ts,
+                    thread_id=thread_id,
+                    text=failure_text,
+                    notify=False,
+                )
+                return True, None
+            for item in saved_group.saved:
+                if item.rel_path is None:
+                    continue
+                annotations.append(f"[uploaded file: {item.rel_path.as_posix()}]")
+        if not annotations:
+            return True, None
+        annotation_text = "\n".join(annotations)
+        prompt_override = _build_upload_prompt(caption_text, annotation_text)
+        return True, prompt_override
+
+    await _handle_file_put_default(
+        cfg,
+        message,
+        context=context,
+        thread_id=thread_id,
+    )
+    return True, None
+
+
+async def _check_file_permissions(
+    cfg: SlackBridgeConfig,
+    *,
+    user_id: str | None,
+    user_msg_id: str,
+    thread_id: str | None,
+) -> bool:
+    if not cfg.files.allowed_user_ids:
+        return True
+    if user_id is None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=user_msg_id,
+            thread_id=thread_id,
+            text="cannot verify sender for file transfer.",
+            notify=False,
+        )
+        return False
+    if user_id not in cfg.files.allowed_user_ids:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=user_msg_id,
+            thread_id=thread_id,
+            text="file transfer is not allowed for this user.",
+            notify=False,
+        )
+        return False
+    return True
+
+
+async def _prepare_file_put_plan(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    args_text: str,
+    context: RunContext | None,
+    *,
+    thread_id: str | None,
+) -> _FilePutPlan | None:
+    run_root = await _resolve_run_root(
+        cfg,
+        context=context,
+        user_msg_id=message.ts,
+        thread_id=thread_id,
+        action="upload",
+    )
+    if run_root is None:
+        return None
+    path_value, force, error = parse_file_prompt(args_text, allow_empty=True)
+    if error is not None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=error,
+            notify=False,
+        )
+        return None
+    return _FilePutPlan(
+        run_root=run_root,
+        path_value=path_value,
+        force=force,
+    )
+
+
+async def _resolve_run_root(
+    cfg: SlackBridgeConfig,
+    *,
+    context: RunContext | None,
+    user_msg_id: str,
+    thread_id: str | None,
+    action: str,
+) -> Path | None:
+    if context is None or context.project is None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=user_msg_id,
+            thread_id=thread_id,
+            text=f"no project context available for file {action}.",
+            notify=False,
+        )
+        return None
+    try:
+        run_root = cfg.runtime.resolve_run_cwd(context)
+    except ConfigError as exc:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=user_msg_id,
+            thread_id=thread_id,
+            text=f"error:\n{exc}",
+            notify=False,
+        )
+        return None
+    if run_root is None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=user_msg_id,
+            thread_id=thread_id,
+            text=f"no project context available for file {action}.",
+            notify=False,
+        )
+        return None
+    return run_root
+
+
+def _resolve_file_put_paths(
+    plan: _FilePutPlan,
+    *,
+    cfg: SlackBridgeConfig,
+    require_dir: bool,
+) -> tuple[Path | None, Path | None, str | None]:
+    path_value = plan.path_value
+    if not path_value:
+        return None, None, None
+    if require_dir or path_value.endswith("/"):
+        base_dir = normalize_relative_path(path_value)
+        if base_dir is None:
+            return None, None, "invalid upload path."
+        deny_rule = deny_reason(base_dir, cfg.files.deny_globs)
+        if deny_rule is not None:
+            return None, None, f"path denied by rule: {deny_rule}"
+        base_target = resolve_path_within_root(plan.run_root, base_dir)
+        if base_target is None:
+            return None, None, "upload path escapes the repo root."
+        if base_target.exists() and not base_target.is_dir():
+            return None, None, "upload path is a file."
+        return base_dir, None, None
+    rel_path = normalize_relative_path(path_value)
+    if rel_path is None:
+        return None, None, "invalid upload path."
+    return None, rel_path, None
+
+
+async def _save_slack_file(
+    cfg: SlackBridgeConfig,
+    *,
+    file,
+    run_root: Path,
+    rel_path: Path | None,
+    base_dir: Path | None,
+    force: bool,
+) -> _FilePutResult:
+    name = default_upload_name(file.name, file.title)
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="file is too large to upload.",
+        )
+    url = file.url_private_download or file.url_private
+    if not url:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="file is not downloadable.",
+        )
+    try:
+        payload = await cfg.client.download_file(url=url)
+    except SlackApiError as exc:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error=f"failed to download file: {exc}",
+        )
+    if len(payload) > MAX_UPLOAD_BYTES:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="file is too large to upload.",
+        )
+    resolved_path = rel_path
+    if resolved_path is None:
+        if base_dir is None:
+            resolved_path = default_upload_path(
+                cfg.files.uploads_dir,
+                file.name,
+                file.title,
+            )
+        else:
+            resolved_path = base_dir / name
+    deny_rule = deny_reason(resolved_path, cfg.files.deny_globs)
+    if deny_rule is not None:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error=f"path denied by rule: {deny_rule}",
+        )
+    target = resolve_path_within_root(run_root, resolved_path)
+    if target is None:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="upload path escapes the repo root.",
+        )
+    if target.exists():
+        if target.is_dir():
+            return _FilePutResult(
+                name=name,
+                rel_path=None,
+                size=None,
+                error="upload target is a directory.",
+            )
+        if not force:
+            return _FilePutResult(
+                name=name,
+                rel_path=None,
+                size=None,
+                error="file already exists; use --force to overwrite.",
+            )
+    try:
+        write_bytes_atomic(target, payload)
+    except OSError as exc:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error=f"failed to write file: {exc}",
+        )
+    return _FilePutResult(
+        name=name,
+        rel_path=resolved_path,
+        size=len(payload),
+        error=None,
+    )
+
+
+def _format_file_put_failures(failed: list[_FilePutResult]) -> str | None:
+    if not failed:
+        return None
+    errors = ", ".join(
+        f"`{item.name}` ({item.error})" for item in failed if item.error is not None
+    )
+    if not errors:
+        return None
+    return f"failed: {errors}"
+
+
+async def _save_file_put(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    args_text: str,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> _FilePutResult | None:
+    files = message.files
+    if not files:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=FILE_PUT_USAGE,
+            notify=False,
+        )
+        return None
+    plan = await _prepare_file_put_plan(
+        cfg,
+        message,
+        args_text,
+        context,
+        thread_id=thread_id,
+    )
+    if plan is None:
+        return None
+    base_dir, rel_path, error = _resolve_file_put_paths(
+        plan,
+        cfg=cfg,
+        require_dir=False,
+    )
+    if error is not None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=error,
+            notify=False,
+        )
+        return None
+    result = await _save_slack_file(
+        cfg,
+        file=files[0],
+        run_root=plan.run_root,
+        rel_path=rel_path,
+        base_dir=base_dir,
+        force=plan.force,
+    )
+    if result.error is not None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=result.error,
+            notify=False,
+        )
+        return None
+    return result
+
+
+async def _save_file_put_group(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    args_text: str,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> _SavedFilePutGroup | None:
+    files = message.files
+    if not files:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=FILE_PUT_USAGE,
+            notify=False,
+        )
+        return None
+    plan = await _prepare_file_put_plan(
+        cfg,
+        message,
+        args_text,
+        context,
+        thread_id=thread_id,
+    )
+    if plan is None:
+        return None
+    base_dir, _, error = _resolve_file_put_paths(
+        plan,
+        cfg=cfg,
+        require_dir=True,
+    )
+    if error is not None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=error,
+            notify=False,
+        )
+        return None
+    saved: list[_FilePutResult] = []
+    failed: list[_FilePutResult] = []
+    for slack_file in files:
+        result = await _save_slack_file(
+            cfg,
+            file=slack_file,
+            run_root=plan.run_root,
+            rel_path=None,
+            base_dir=base_dir,
+            force=plan.force,
+        )
+        if result.error is None:
+            saved.append(result)
+        else:
+            failed.append(result)
+    return _SavedFilePutGroup(base_dir=base_dir, saved=saved, failed=failed)
+
+
+async def _handle_file_put(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    args_text: str,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> None:
+    files = message.files
+    if not files:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=FILE_PUT_USAGE,
+            notify=False,
+        )
+        return
+    if len(files) == 1:
+        saved = await _save_file_put(
+            cfg,
+            message,
+            args_text=args_text,
+            context=context,
+            thread_id=thread_id,
+        )
+        if saved is None or saved.rel_path is None or saved.size is None:
+            return
+        context_label = _format_context_label(cfg.runtime, context)
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=(
+                f"saved `{saved.rel_path.as_posix()}` "
+                f"in `{context_label}` ({format_bytes(saved.size)})"
+            ),
+            notify=False,
+        )
+        return
+
+    saved_group = await _save_file_put_group(
+        cfg,
+        message,
+        args_text=args_text,
+        context=context,
+        thread_id=thread_id,
+    )
+    if saved_group is None:
+        return
+    context_label = _format_context_label(cfg.runtime, context)
+    total_bytes = sum(item.size or 0 for item in saved_group.saved)
+    dir_label: Path | None = saved_group.base_dir
+    if dir_label is None and saved_group.saved:
+        first_path = saved_group.saved[0].rel_path
+        if first_path is not None:
+            dir_label = first_path.parent
+    if saved_group.saved:
+        saved_names = ", ".join(f"`{item.name}`" for item in saved_group.saved)
+        if dir_label is not None:
+            dir_text = dir_label.as_posix()
+            if not dir_text.endswith("/"):
+                dir_text = f"{dir_text}/"
+            text = (
+                f"saved {saved_names} to `{dir_text}` "
+                f"in `{context_label}` ({format_bytes(total_bytes)})"
+            )
+        else:
+            text = (
+                f"saved {saved_names} in `{context_label}` "
+                f"({format_bytes(total_bytes)})"
+            )
+    else:
+        text = "failed to upload files."
+    failure_text = _format_file_put_failures(saved_group.failed)
+    if failure_text is not None:
+        text = f"{text}\n\n{failure_text}"
+    await send_plain(
+        cfg.exec_cfg,
+        channel_id=cfg.channel_id,
+        user_msg_id=message.ts,
+        thread_id=thread_id,
+        text=text,
+        notify=False,
+    )
+
+
+async def _handle_file_put_default(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> None:
+    await _handle_file_put(
+        cfg,
+        message,
+        args_text="",
+        context=context,
+        thread_id=thread_id,
+    )
+
+
+async def _handle_file_get(
+    cfg: SlackBridgeConfig,
+    message: SlackMessage,
+    *,
+    args_text: str,
+    context: RunContext | None,
+    thread_id: str | None,
+) -> None:
+    if not await _check_file_permissions(
+        cfg,
+        user_id=message.user,
+        user_msg_id=message.ts,
+        thread_id=thread_id,
+    ):
+        return
+    run_root = await _resolve_run_root(
+        cfg,
+        context=context,
+        user_msg_id=message.ts,
+        thread_id=thread_id,
+        action="download",
+    )
+    if run_root is None:
+        return
+    if not args_text.strip():
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=FILE_GET_USAGE,
+            notify=False,
+        )
+        return
+    rel_path = normalize_relative_path(args_text)
+    if rel_path is None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text="invalid download path.",
+            notify=False,
+        )
+        return
+    deny_rule = deny_reason(rel_path, cfg.files.deny_globs)
+    if deny_rule is not None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=f"path denied by rule: {deny_rule}",
+            notify=False,
+        )
+        return
+    target = resolve_path_within_root(run_root, rel_path)
+    if target is None:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text="download path escapes the repo root.",
+            notify=False,
+        )
+        return
+    if not target.exists():
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text="file does not exist.",
+            notify=False,
+        )
+        return
+
+    if target.is_dir():
+        try:
+            payload = zip_directory(
+                run_root,
+                rel_path,
+                cfg.files.deny_globs,
+                max_bytes=MAX_DOWNLOAD_BYTES,
+            )
+        except ZipTooLargeError:
+            await send_plain(
+                cfg.exec_cfg,
+                channel_id=cfg.channel_id,
+                user_msg_id=message.ts,
+                thread_id=thread_id,
+                text="file is too large to send.",
+                notify=False,
+            )
+            return
+        except OSError as exc:
+            await send_plain(
+                cfg.exec_cfg,
+                channel_id=cfg.channel_id,
+                user_msg_id=message.ts,
+                thread_id=thread_id,
+                text=f"failed to read directory: {exc}",
+                notify=False,
+            )
+            return
+        filename = f"{rel_path.name or 'archive'}.zip"
+        comment = f"`{rel_path.as_posix()}/` ({format_bytes(len(payload))})"
+    else:
+        try:
+            size = target.stat().st_size
+            if size > MAX_DOWNLOAD_BYTES:
+                await send_plain(
+                    cfg.exec_cfg,
+                    channel_id=cfg.channel_id,
+                    user_msg_id=message.ts,
+                    thread_id=thread_id,
+                    text="file is too large to send.",
+                    notify=False,
+                )
+                return
+            payload = target.read_bytes()
+        except OSError as exc:
+            await send_plain(
+                cfg.exec_cfg,
+                channel_id=cfg.channel_id,
+                user_msg_id=message.ts,
+                thread_id=thread_id,
+                text=f"failed to read file: {exc}",
+                notify=False,
+            )
+            return
+        filename = target.name
+        comment = f"`{rel_path.as_posix()}` ({format_bytes(len(payload))})"
+    if len(payload) > MAX_DOWNLOAD_BYTES:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text="file is too large to send.",
+            notify=False,
+        )
+        return
+    try:
+        await cfg.client.upload_file(
+            channel_id=cfg.channel_id,
+            filename=filename,
+            content=payload,
+            thread_ts=thread_id,
+            initial_comment=comment,
+        )
+    except SlackApiError as exc:
+        await send_plain(
+            cfg.exec_cfg,
+            channel_id=cfg.channel_id,
+            user_msg_id=message.ts,
+            thread_id=thread_id,
+            text=f"failed to send file: {exc}",
+            notify=False,
+        )
+
+
+def _build_upload_prompt(base: str, annotation: str) -> str:
+    if base and base.strip():
+        return f"{base}\n\n{annotation}"
+    return annotation
 
 
 def _session_thread_id(channel_id: str, thread_ts: str | None) -> str:
@@ -1015,6 +1904,84 @@ async def _handle_slash_command(
             response_url=response_url,
             channel_id=channel_id,
             text="Slack thread state store is not configured.",
+        )
+        return
+
+    if command_id == "file":
+        if not cfg.files.enabled:
+            await _respond_ephemeral(
+                cfg,
+                response_url=response_url,
+                channel_id=channel_id,
+                text="file transfer disabled; enable `[transports.slack.files]`.",
+            )
+            return
+        ambient_context = await thread_store.get_context(
+            channel_id=channel_id,
+            thread_id=thread_id,
+        )
+        try:
+            resolved = cfg.runtime.resolve_message(
+                text=args_text,
+                reply_text=None,
+                ambient_context=ambient_context,
+            )
+        except DirectiveError as exc:
+            await _respond_ephemeral(
+                cfg,
+                response_url=response_url,
+                channel_id=channel_id,
+                text=f"error:\n{exc}",
+            )
+            return
+        if resolved.context is not None and resolved.context.project is not None:
+            await thread_store.set_context(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                context=resolved.context,
+            )
+        command, rest, error = parse_file_command(resolved.prompt)
+        if error is not None:
+            await _respond_ephemeral(
+                cfg,
+                response_url=response_url,
+                channel_id=channel_id,
+                text=error,
+            )
+            return
+        user_id = payload.get("user_id")
+        if not isinstance(user_id, str):
+            user_id = None
+        msg = SlackMessage(
+            ts=thread_ts or "0",
+            text=None,
+            user=user_id,
+            bot_id=None,
+            subtype=None,
+            thread_ts=thread_ts,
+            files=(),
+        )
+        if command == "put":
+            await _respond_ephemeral(
+                cfg,
+                response_url=response_url,
+                channel_id=channel_id,
+                text="upload a file and add `@takopi /file put <path>` as the caption.",
+            )
+            return
+        if response_url:
+            await _respond_ephemeral(
+                cfg,
+                response_url=response_url,
+                channel_id=channel_id,
+                text="sending file...",
+            )
+        await _handle_file_get(
+            cfg,
+            msg,
+            args_text=rest,
+            context=resolved.context,
+            thread_id=thread_ts,
         )
         return
 
@@ -1539,7 +2506,7 @@ async def _run_socket_loop(
                             bot_user_id=bot_user_id,
                             bot_name=bot_name,
                         )
-                        if not cleaned.strip():
+                        if not cleaned.strip() and not msg.files:
                             continue
                         tg.start_soon(
                             _safe_handle_slack_message,
