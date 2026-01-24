@@ -30,19 +30,16 @@ from takopi.runners.run_options import EngineRunOptions
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
 from .commands import dispatch_command, split_command_args
-from .config import SlackFilesSettings, SlackVoiceSettings
+from .config import SlackFilesSettings
 from .engine import run_engine, send_plain
 from .commands.file_transfer import (
     extract_files,
     handle_file_command,
     handle_file_uploads,
-    is_audio_file,
 )
-from .commands.reply import make_reply
 from .outbox import DELETE_PRIORITY, EDIT_PRIORITY, SEND_PRIORITY, OutboxOp, SlackOutbox
 from .overrides import REASONING_LEVELS, is_valid_reasoning_level, supports_reasoning
 from .thread_sessions import SlackThreadSessionStore
-from .voice import transcribe_voice
 
 logger = get_logger(__name__)
 
@@ -130,7 +127,6 @@ class SlackBridgeConfig:
     startup_msg: str
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
-    voice: SlackVoiceSettings
     thread_store: SlackThreadSessionStore | None = None
 
 
@@ -820,8 +816,6 @@ async def _resolve_prompt_from_media(
 ) -> str | None:
     channel_id = cfg.channel_id
     files = extract_files(message.files)
-    audio_files = [item for item in files if is_audio_file(item)]
-    doc_files = [item for item in files if not is_audio_file(item)]
 
     if prompt.strip():
         tokens = split_command_args(prompt)
@@ -839,7 +833,7 @@ async def _resolve_prompt_from_media(
             )
             return None
 
-    if doc_files:
+    if files:
         await handle_file_uploads(
             cfg,
             channel_id=channel_id,
@@ -847,30 +841,10 @@ async def _resolve_prompt_from_media(
             thread_ts=thread_id,
             user_id=message.user,
             caption_text=prompt,
-            files=doc_files,
+            files=files,
             ambient_context=context,
         )
         return None
-
-    if not prompt.strip() and audio_files:
-        reply = make_reply(
-            cfg,
-            channel_id=channel_id,
-            message_ts=message.ts,
-            thread_ts=thread_id,
-        )
-        prompt = await transcribe_voice(
-            client=cfg.client,
-            file=audio_files[0],
-            enabled=cfg.voice.enabled,
-            model=cfg.voice.model,
-            max_bytes=cfg.voice.max_bytes,
-            reply=reply,
-            base_url=cfg.voice.base_url,
-            api_key=cfg.voice.api_key,
-        )
-        if prompt is None:
-            return None
 
     if not prompt.strip():
         return None

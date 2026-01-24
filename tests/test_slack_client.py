@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import anyio
 import httpx
 import pytest
@@ -70,6 +72,7 @@ async def test_request_with_client_bad_json() -> None:
 @pytest.mark.anyio
 async def test_open_socket_url(monkeypatch) -> None:
     request = httpx.Request("POST", "https://example.com")
+    real_async_client = httpx.AsyncClient
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, request=request, json={"ok": True, "url": "wss://x"})
@@ -79,7 +82,10 @@ async def test_open_socket_url(monkeypatch) -> None:
     class _StubAsyncClient:
         def __init__(self, **kwargs) -> None:
             _ = kwargs
-            self._client = httpx.AsyncClient(transport=transport, base_url="https://example.com")
+            self._client = real_async_client(
+                transport=transport,
+                base_url="https://example.com",
+            )
 
         async def __aenter__(self) -> httpx.AsyncClient:
             return self._client
@@ -148,24 +154,28 @@ def test_client_methods_build_payloads() -> None:
     assert auth.user_id == "U1"
 
     msg = anyio.run(
-        client.post_message,
-        channel_id="C1",
-        text="hello",
-        blocks=[{"type": "section"}],
-        thread_ts="1.1",
-        reply_broadcast=True,
+        partial(
+            client.post_message,
+            channel_id="C1",
+            text="hello",
+            blocks=[{"type": "section"}],
+            thread_ts="1.1",
+            reply_broadcast=True,
+        )
     )
     assert isinstance(msg, SlackMessage)
 
     anyio.run(
-        client.update_message,
-        channel_id="C1",
-        ts="1.1",
-        text="edit",
-        blocks=None,
+        partial(
+            client.update_message,
+            channel_id="C1",
+            ts="1.1",
+            text="edit",
+            blocks=None,
+        )
     )
 
-    anyio.run(client.delete_message, channel_id="C1", ts="1.1")
+    anyio.run(partial(client.delete_message, channel_id="C1", ts="1.1"))
 
     post_call = next(call for call in client.calls if call[1] == "/chat.postMessage")
     assert post_call[2]["channel"] == "C1"

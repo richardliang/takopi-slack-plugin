@@ -30,7 +30,22 @@ async def test_outbox_priority_order() -> None:
         calls.append(label)
         return label
 
-    outbox = SlackOutbox(
+    class _ManualOutbox(SlackOutbox):
+        async def ensure_worker(self) -> None:
+            return None
+
+        async def drain(self) -> None:
+            while True:
+                async with self._cond:
+                    picked = self._pick_locked()
+                    if picked is None:
+                        return
+                    key, op = picked
+                    self._pending.pop(key, None)
+                result = await self._execute_op(op)
+                op.set_result(result)
+
+    outbox = _ManualOutbox(
         interval_for_channel=lambda _: 0.0,
         clock=clock,
         sleep=clock.sleep,
@@ -59,6 +74,7 @@ async def test_outbox_priority_order() -> None:
     await outbox.enqueue(key="op2", op=op2, wait=False)
     await outbox.enqueue(key="op3", op=op3, wait=False)
 
+    await outbox.drain()
     await op1.done.wait()
     await op2.done.wait()
     await op3.done.wait()

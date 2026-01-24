@@ -8,12 +8,11 @@ import pytest
 
 from takopi.api import RunContext
 from takopi.runner_bridge import ExecBridgeConfig
-from takopi_slack_plugin.config import SlackFilesSettings, SlackVoiceSettings
+from takopi_slack_plugin.config import SlackFilesSettings
 from takopi_slack_plugin.commands.file_transfer import (
     SlackFile,
     extract_files,
     handle_file_command,
-    is_audio_file,
 )
 from tests.slack_fakes import FakeTransport
 
@@ -77,7 +76,6 @@ async def test_handle_file_put_saves_file(tmp_path) -> None:
         client=fake_client,
         runtime=_FakeRuntime(tmp_path),
         files=SlackFilesSettings(enabled=True),
-        voice=SlackVoiceSettings(),
         exec_cfg=ExecBridgeConfig(transport=transport, presenter=object(), final_notify=False),
     )
     file = SlackFile(
@@ -116,7 +114,6 @@ async def test_handle_file_get_uploads_file(tmp_path) -> None:
         client=fake_client,
         runtime=_FakeRuntime(tmp_path),
         files=SlackFilesSettings(enabled=True),
-        voice=SlackVoiceSettings(),
         exec_cfg=ExecBridgeConfig(transport=transport, presenter=object(), final_notify=False),
     )
     path = tmp_path / "note.txt"
@@ -136,12 +133,10 @@ async def test_handle_file_get_uploads_file(tmp_path) -> None:
     assert fake_client.upload_calls
 
 
-def test_extract_files_and_audio_detection() -> None:
+def test_extract_files() -> None:
     payload = [
         {"id": "F1", "url_private": "https://example.com", "filetype": "mp3"},
         {"id": "F2", "url_private": "https://example.com", "mimetype": "text/plain"},
     ]
     files = extract_files(payload)
     assert len(files) == 2
-    assert is_audio_file(files[0]) is True
-    assert is_audio_file(files[1]) is False

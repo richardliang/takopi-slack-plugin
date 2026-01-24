@@ -110,68 +110,12 @@ class SlackFilesSettings:
 
 
 @dataclass(frozen=True, slots=True)
-class SlackVoiceSettings:
-    enabled: bool = False
-    model: str = "gpt-4o-mini-transcribe"
-    max_bytes: int = 10 * 1024 * 1024
-    base_url: str | None = None
-    api_key: str | None = None
-
-    @classmethod
-    def from_config(
-        cls, config: dict[str, Any], *, config_path: Path
-    ) -> "SlackVoiceSettings":
-        enabled = _optional_bool(
-            config,
-            "voice_transcription",
-            False,
-            config_path,
-            label="transports.slack.voice_transcription",
-        )
-        model = config.get("voice_transcription_model", cls.model)
-        if not isinstance(model, str) or not model.strip():
-            raise ConfigError(
-                f"Invalid `transports.slack.voice_transcription_model` in "
-                f"{config_path}; expected a non-empty string."
-            )
-        base_url = _optional_str(
-            config,
-            "voice_transcription_base_url",
-            None,
-            config_path,
-            label="transports.slack.voice_transcription_base_url",
-        )
-        api_key = _optional_str(
-            config,
-            "voice_transcription_api_key",
-            None,
-            config_path,
-            label="transports.slack.voice_transcription_api_key",
-        )
-        max_bytes = _optional_int(
-            config,
-            "voice_max_bytes",
-            cls.max_bytes,
-            config_path,
-            label="transports.slack.voice_max_bytes",
-        )
-        return cls(
-            enabled=enabled,
-            model=model.strip(),
-            max_bytes=max_bytes,
-            base_url=base_url,
-            api_key=api_key,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class SlackTransportSettings:
     bot_token: str
     channel_id: str
     app_token: str
     message_overflow: Literal["trim", "split"] = "split"
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
-    voice: SlackVoiceSettings = field(default_factory=SlackVoiceSettings)
 
     @classmethod
     def from_config(
@@ -204,15 +148,12 @@ class SlackTransportSettings:
         files = SlackFilesSettings.from_config(
             config.get("files"), config_path=config_path
         )
-        voice = SlackVoiceSettings.from_config(config, config_path=config_path)
-
         return cls(
             bot_token=bot_token,
             channel_id=channel_id,
             app_token=app_token,
             message_overflow=message_overflow,
             files=files,
-            voice=voice,
         )
 
 

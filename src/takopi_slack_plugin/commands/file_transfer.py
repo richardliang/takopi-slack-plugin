@@ -30,9 +30,6 @@ logger = get_logger(__name__)
 FILE_PUT_USAGE = "usage: `/file put <path>`"
 FILE_GET_USAGE = "usage: `/file get <path>`"
 
-AUDIO_FILE_TYPES = frozenset({"m4a", "mp3", "wav", "ogg", "oga", "flac"})
-
-
 @dataclass(frozen=True, slots=True)
 class SlackFile:
     file_id: str
@@ -103,14 +100,6 @@ def extract_files(files: object) -> list[SlackFile]:
         if parsed_file is not None:
             parsed.append(parsed_file)
     return parsed
-
-
-def is_audio_file(file: SlackFile) -> bool:
-    if file.mimetype and file.mimetype.lower().startswith("audio/"):
-        return True
-    if file.filetype and file.filetype.lower() in AUDIO_FILE_TYPES:
-        return True
-    return False
 
 
 def _format_context(cfg: SlackBridgeConfig, context: RunContext | None) -> str:
@@ -195,6 +184,8 @@ async def handle_file_command(
         await _handle_file_get(
             cfg,
             reply=reply,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
             user_id=user_id,
             args_text=rest,
             ambient_context=ambient_context,
@@ -453,6 +444,8 @@ async def _handle_file_get(
     cfg: SlackBridgeConfig,
     *,
     reply,
+    channel_id: str,
+    thread_ts: str | None,
     user_id: str | None,
     args_text: str,
     ambient_context: RunContext | None,
