@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import msgspec
 
@@ -18,11 +19,45 @@ class _ThreadSession(msgspec.Struct, forbid_unknown_fields=False):
     model_overrides: dict[str, str] | None = None
     reasoning_overrides: dict[str, str] | None = None
     default_engine: str | None = None
+    last_activity_at: float | None = None
+    owner_user_id: str | None = None
+    worktree: _WorktreeRef | None = None
+    reminder: _ReminderState | None = None
+
+
+class _WorktreeRef(msgspec.Struct, forbid_unknown_fields=False):
+    project: str
+    branch: str
+
+
+class _ReminderState(msgspec.Struct, forbid_unknown_fields=False):
+    sent_at: float | None = None
 
 
 class _ThreadSessionsState(msgspec.Struct, forbid_unknown_fields=False):
     version: int
     threads: dict[str, _ThreadSession] = msgspec.field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeSnapshot:
+    project: str
+    branch: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderSnapshot:
+    sent_at: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadSnapshot:
+    channel_id: str
+    thread_id: str
+    last_activity_at: float | None
+    owner_user_id: str | None
+    worktree: WorktreeSnapshot | None
+    reminder: ReminderSnapshot | None
 
 
 def resolve_sessions_path(config_path: Path) -> Path:
@@ -31,6 +66,15 @@ def resolve_sessions_path(config_path: Path) -> Path:
 
 def _thread_key(channel_id: str, thread_id: str) -> str:
     return f"{channel_id}:{thread_id}"
+
+
+def _split_thread_key(key: str) -> tuple[str, str] | None:
+    if ":" not in key:
+        return None
+    channel_id, thread_id = key.split(":", 1)
+    if not channel_id or not thread_id:
+        return None
+    return channel_id, thread_id
 
 
 def _new_state() -> _ThreadSessionsState:
@@ -59,6 +103,32 @@ class SlackThreadSessionStore(JsonStateStore[_ThreadSessionsState]):
             self._state.threads[key] = session
         return session
 
+    @staticmethod
+    def _snapshot_from_session(
+        channel_id: str,
+        thread_id: str,
+        session: _ThreadSession,
+    ) -> ThreadSnapshot:
+        worktree = None
+        if session.worktree is not None:
+            worktree = WorktreeSnapshot(
+                project=session.worktree.project,
+                branch=session.worktree.branch,
+            )
+        reminder = None
+        if session.reminder is not None:
+            reminder = ReminderSnapshot(
+                sent_at=session.reminder.sent_at,
+            )
+        return ThreadSnapshot(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            last_activity_at=session.last_activity_at,
+            owner_user_id=session.owner_user_id,
+            worktree=worktree,
+            reminder=reminder,
+        )
+
     async def get_resume(
         self, *, channel_id: str, thread_id: str, engine: str
     ) -> ResumeToken | None:
@@ -82,6 +152,91 @@ class SlackThreadSessionStore(JsonStateStore[_ThreadSessionsState]):
             session = self._get_or_create(key)
             session.resumes[token.engine] = token.value
             self._save_locked()
+
+    async def record_activity(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+        user_id: str | None,
+        worktree: WorktreeSnapshot | None,
+        clear_worktree: bool,
+        now: float,
+    ) -> None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._get_or_create(key)
+            session.last_activity_at = now
+            if user_id and not session.owner_user_id:
+                session.owner_user_id = user_id
+            if worktree is not None:
+                session.worktree = _WorktreeRef(
+                    project=worktree.project,
+                    branch=worktree.branch,
+                )
+            elif clear_worktree:
+                session.worktree = None
+            reminder = session.reminder
+            if reminder is None:
+                reminder = _ReminderState()
+                session.reminder = reminder
+            reminder.sent_at = None
+            self._save_locked()
+
+    async def set_reminder_sent(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+        now: float,
+    ) -> None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._get_or_create(key)
+            reminder = session.reminder
+            if reminder is None:
+                reminder = _ReminderState()
+                session.reminder = reminder
+            reminder.sent_at = now
+            self._save_locked()
+
+    async def clear_worktree(self, *, channel_id: str, thread_id: str) -> None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._state.threads.get(key)
+            if session is None:
+                return
+            session.worktree = None
+            session.reminder = None
+            self._save_locked()
+
+    async def get_thread_snapshot(
+        self, *, channel_id: str, thread_id: str
+    ) -> ThreadSnapshot | None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._state.threads.get(key)
+            if session is None:
+                return None
+            return self._snapshot_from_session(channel_id, thread_id, session)
+
+    async def list_thread_snapshots(self) -> list[ThreadSnapshot]:
+        async with self._lock:
+            self._reload_locked_if_needed()
+            snapshots: list[ThreadSnapshot] = []
+            for key, session in self._state.threads.items():
+                parsed = _split_thread_key(key)
+                if parsed is None:
+                    continue
+                channel_id, thread_id = parsed
+                snapshots.append(
+                    self._snapshot_from_session(channel_id, thread_id, session)
+                )
+            return snapshots
 
     async def clear_thread(self, *, channel_id: str, thread_id: str) -> None:
         key = self._thread_key(channel_id, thread_id)
