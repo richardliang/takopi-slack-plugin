@@ -53,7 +53,6 @@ MAX_SLACK_TEXT = 3900
 MAX_BLOCK_TEXT = 2800
 ARCHIVE_ACTION_ID = "takopi-slack:archive"
 CANCEL_ACTION_ID = "takopi-slack:cancel"
-STALE_WORKTREE_DELETE_ACTION_ID = "takopi-slack:worktree-delete"
 STALE_WORKTREE_SNOOZE_ACTION_ID = "takopi-slack:worktree-snooze"
 STALE_WORKTREE_DISMISS_ACTION_ID = "takopi-slack:worktree-dismiss"
 INLINE_COMMAND_RE = re.compile(
@@ -600,8 +599,8 @@ def _build_stale_worktree_blocks(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "delete worktree"},
-                    "action_id": STALE_WORKTREE_DELETE_ACTION_ID,
+                    "text": {"type": "plain_text", "text": "archive"},
+                    "action_id": ARCHIVE_ACTION_ID,
                     "style": "danger",
                     "value": thread_id,
                 },
@@ -1779,7 +1778,6 @@ async def _handle_stale_worktree_action(
     action = _extract_block_action(
         actions,
         action_ids={
-            STALE_WORKTREE_DELETE_ACTION_ID,
             STALE_WORKTREE_SNOOZE_ACTION_ID,
             STALE_WORKTREE_DISMISS_ACTION_ID,
         },
@@ -1818,43 +1816,6 @@ async def _handle_stale_worktree_action(
         return True
 
     action_id = action.get("action_id")
-    user = payload.get("user") or {}
-    user_id = user.get("id") if isinstance(user, dict) else None
-
-    if action_id == STALE_WORKTREE_DELETE_ACTION_ID:
-        if (
-            snapshot.owner_user_id
-            and isinstance(user_id, str)
-            and user_id != snapshot.owner_user_id
-        ):
-            await _respond_ephemeral(
-                cfg,
-                response_url=_extract_response_url(payload),
-                channel_id=channel_id,
-                text=f"only <@{snapshot.owner_user_id}> can delete this worktree.",
-            )
-            return True
-        ok, result = await _delete_worktree_for_snapshot(cfg, snapshot)
-        if ok:
-            await cfg.thread_store.clear_worktree(
-                channel_id=channel_id,
-                thread_id=thread_id,
-            )
-        text = (
-            f"{_format_worktree_ref(snapshot.worktree)} {result}"
-            if ok
-            else f"could not delete {_format_worktree_ref(snapshot.worktree)}: {result}"
-        )
-        await _update_stale_worktree_message(
-            cfg,
-            channel_id=channel_id,
-            message_ts=message_ts,
-            thread_id=thread_id,
-            text=text,
-            include_actions=not ok,
-        )
-        return True
-
     if action_id == STALE_WORKTREE_SNOOZE_ACTION_ID:
         snoozed_until = time.time() + cfg.stale_worktree_snooze_hours * 3600.0
         await cfg.thread_store.set_reminder_snoozed(
@@ -2109,7 +2070,7 @@ def _format_stale_worktree_text(
     label = _format_worktree_ref(worktree)
     hours_label = _format_hours_label(hours)
     intro = prefix or "Worktree"
-    return f"{mention}{intro} {label} has been idle for {hours_label}. Delete it?"
+    return f"{mention}{intro} {label} has been idle for {hours_label}. Archive it?"
 
 
 async def _run_git(

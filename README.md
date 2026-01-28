@@ -11,7 +11,7 @@ stores per-thread context + resume tokens.
 - slash commands + message shortcuts for overrides and plugin commands
 - cancel button on progress messages
 - archive button on responses (deletes worktree or resets to origin/main)
-- optional stale worktree reminders with delete/snooze buttons
+- optional stale worktree reminders prompting archive with snooze/dismiss
 - message overflow: split or trim long responses
 
 ## requirements
