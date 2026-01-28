@@ -1454,6 +1454,26 @@ def _extract_action_thread_id(
     return None
 
 
+def _extract_payload_thread_id(payload: dict[str, Any]) -> str | None:
+    message = payload.get("message")
+    if isinstance(message, dict):
+        thread_ts = _parse_thread_ts(message.get("thread_ts"))
+        if thread_ts:
+            return thread_ts
+        ts = _parse_thread_ts(message.get("ts"))
+        if ts:
+            return ts
+    container = payload.get("container")
+    if isinstance(container, dict):
+        thread_ts = _parse_thread_ts(container.get("thread_ts"))
+        if thread_ts:
+            return thread_ts
+        ts = _parse_thread_ts(container.get("message_ts"))
+        if ts:
+            return ts
+    return None
+
+
 def _extract_action_message_ts(payload: dict[str, Any]) -> str | None:
     message = payload.get("message")
     if isinstance(message, dict):
@@ -1468,27 +1488,46 @@ def _extract_action_message_ts(payload: dict[str, Any]) -> str | None:
     return None
 
 
-async def _update_archive_message(
+async def _send_archive_message(
     cfg: SlackBridgeConfig,
     *,
     channel_id: str,
-    message_ts: str | None,
-    thread_id: str,
+    thread_id: str | None,
     text: str,
     include_actions: bool,
 ) -> None:
-    if message_ts is None:
-        return
     blocks = _build_archive_blocks(
         text,
         thread_id=thread_id,
         include_actions=include_actions,
     )
+    await cfg.client.post_message(
+        channel_id=channel_id,
+        text=text,
+        blocks=blocks,
+        thread_ts=thread_id,
+    )
+
+
+async def _clear_archive_actions(
+    cfg: SlackBridgeConfig,
+    *,
+    channel_id: str,
+    message_ts: str | None,
+    thread_id: str | None,
+    text: str | None,
+) -> None:
+    if not message_ts or not isinstance(text, str) or not text:
+        return
     await cfg.client.update_message(
         channel_id=channel_id,
         ts=message_ts,
         text=text,
-        blocks=blocks,
+        blocks=_build_archive_blocks(
+            text,
+            thread_id=thread_id,
+            include_actions=False,
+        ),
     )
 
 
@@ -1558,6 +1597,8 @@ async def _handle_archive_action(
         )
         return True
     message_ts = _extract_action_message_ts(payload)
+    message = payload.get("message")
+    message_text = message.get("text") if isinstance(message, dict) else None
     snapshot = await cfg.thread_store.get_thread_snapshot(
         channel_id=channel_id,
         thread_id=thread_id,
@@ -1575,13 +1616,19 @@ async def _handle_archive_action(
             if ok
             else f"archive failed for {_format_worktree_ref(snapshot.worktree)}: {result}"
         )
-        await _update_archive_message(
+        await _send_archive_message(
+            cfg,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            text=text,
+            include_actions=not ok,
+        )
+        await _clear_archive_actions(
             cfg,
             channel_id=channel_id,
             message_ts=message_ts,
             thread_id=thread_id,
-            text=text,
-            include_actions=not ok,
+            text=message_text,
         )
         return True
 
@@ -1590,13 +1637,19 @@ async def _handle_archive_action(
         thread_id=thread_id,
     )
     if context is None or not context.project:
-        await _update_archive_message(
+        await _send_archive_message(
+            cfg,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            text="archive failed: no project context found for this thread.",
+            include_actions=False,
+        )
+        await _clear_archive_actions(
             cfg,
             channel_id=channel_id,
             message_ts=message_ts,
             thread_id=thread_id,
-            text="archive failed: no project context found for this thread.",
-            include_actions=False,
+            text=message_text,
         )
         return True
 
@@ -1606,13 +1659,19 @@ async def _handle_archive_action(
         if ok
         else f"archive failed for `/{context.project}`: {result}"
     )
-    await _update_archive_message(
+    await _send_archive_message(
+        cfg,
+        channel_id=channel_id,
+        thread_id=thread_id,
+        text=text,
+        include_actions=not ok,
+    )
+    await _clear_archive_actions(
         cfg,
         channel_id=channel_id,
         message_ts=message_ts,
         thread_id=thread_id,
-        text=text,
-        include_actions=not ok,
+        text=message_text,
     )
     return True
 
@@ -1720,11 +1779,17 @@ async def _handle_cancel_action(
     message_text = None
     if isinstance(message, dict):
         message_text = message.get("text")
+    thread_id = _extract_payload_thread_id(payload)
+    text = message_text or "cancel requested"
     await cfg.client.update_message(
         channel_id=channel_id,
         ts=message_ts,
-        text=message_text or "cancel requested",
-        blocks=[],
+        text=text,
+        blocks=_build_archive_blocks(
+            text,
+            thread_id=thread_id,
+            include_actions=True,
+        ),
     )
 
 
