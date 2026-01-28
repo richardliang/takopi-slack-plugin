@@ -146,6 +146,10 @@ class SlackBackend(TransportBackend):
             exec_cfg=exec_cfg,
             files=settings.files,
             thread_store=thread_store,
+            stale_worktree_reminder=settings.stale_worktree_reminder,
+            stale_worktree_hours=settings.stale_worktree_hours,
+            stale_worktree_snooze_hours=settings.stale_worktree_snooze_hours,
+            stale_worktree_check_interval_s=settings.stale_worktree_check_interval_s,
         )
 
         async def run_loop() -> None:

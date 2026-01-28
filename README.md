@@ -10,8 +10,8 @@ stores per-thread context + resume tokens.
   `~/.takopi/slack_thread_sessions_state.json`
 - slash commands + message shortcuts for overrides and plugin commands
 - cancel button on progress messages
+- optional stale worktree reminders with delete/snooze buttons
 - message overflow: split or trim long responses
-- file transfer: upload files into a project or fetch files/directories back
 
 ## requirements
 
@@ -20,7 +20,6 @@ stores per-thread context + resume tokens.
 - slack bot token with `chat:write`, `commands`, `app_mentions:read`, and
   the matching history scopes for your channel type (`channels:history`,
   `groups:history`, `im:history`, `mpim:history`)
-- for file transfer, add `files:read` and `files:write`
 - slack app token (`xapp-`) with `connections:write`
 
 ## install
@@ -61,6 +60,10 @@ bot_token = "xoxb-..."
 app_token = "xapp-..."
 channel_id = "C12345678"
 message_overflow = "split"
+stale_worktree_reminder = true
+stale_worktree_hours = 24
+stale_worktree_snooze_hours = 24
+stale_worktree_check_interval_s = 600
 
 [transports.slack.files]
 enabled = false
@@ -123,19 +126,6 @@ command identified by `takopi:<plugin_id>`.
 
 progress messages include a cancel button; enable interactivity & shortcuts so
 clicks are delivered in socket mode.
-
-file transfer (requires `files:read` + `files:write` scopes):
-
-```
-/file put path/to/file.txt
-/file get path/to/dir/
-```
-
-attach a file to `/file put ...` to upload it. audio file uploads can be
-uploaded like any other file.
-when `auto_put_mode = "prompt"`, captions are used as prompts and include an
-`[uploaded files]` annotation.
-file transfers require a project context; use `/project` or `@branch` first.
 
 for opinionated gating, see `docs/AGENTS.example.md` and `docs/GATING_README.md`, and
 customize `~/.codex/AGENTS.md`.

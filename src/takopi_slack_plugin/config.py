@@ -115,6 +115,10 @@ class SlackTransportSettings:
     app_token: str
     message_overflow: Literal["trim", "split"] = "split"
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
+    stale_worktree_reminder: bool = False
+    stale_worktree_hours: float = 24.0
+    stale_worktree_snooze_hours: float = 24.0
+    stale_worktree_check_interval_s: float = 600.0
 
     @classmethod
     def from_config(
@@ -147,12 +151,46 @@ class SlackTransportSettings:
         files = SlackFilesSettings.from_config(
             config.get("files"), config_path=config_path
         )
+
+        stale_worktree_reminder = config.get("stale_worktree_reminder", False)
+        if not isinstance(stale_worktree_reminder, bool):
+            raise ConfigError(
+                f"Invalid `transports.slack.stale_worktree_reminder` in {config_path}; "
+                "expected true or false."
+            )
+
+        stale_worktree_hours = _require_number(
+            config,
+            "stale_worktree_hours",
+            default=24.0,
+            config_path=config_path,
+            min_value=0.5,
+        )
+        stale_worktree_snooze_hours = _require_number(
+            config,
+            "stale_worktree_snooze_hours",
+            default=24.0,
+            config_path=config_path,
+            min_value=0.5,
+        )
+        stale_worktree_check_interval_s = _require_number(
+            config,
+            "stale_worktree_check_interval_s",
+            default=600.0,
+            config_path=config_path,
+            min_value=30.0,
+        )
+
         return cls(
             bot_token=bot_token,
             channel_id=channel_id,
             app_token=app_token,
             message_overflow=message_overflow,
             files=files,
+            stale_worktree_reminder=stale_worktree_reminder,
+            stale_worktree_hours=stale_worktree_hours,
+            stale_worktree_snooze_hours=stale_worktree_snooze_hours,
+            stale_worktree_check_interval_s=stale_worktree_check_interval_s,
         )
 
 
@@ -220,3 +258,26 @@ def _optional_str_list(
         name = label or f"transports.slack.{key}"
         raise ConfigError(f"Invalid `{name}` in {config_path}; expected a list of strings.")
     return [item.strip() for item in value if item.strip()]
+
+
+def _require_number(
+    config: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+    config_path: Path,
+    min_value: float | None = None,
+) -> float:
+    value = config.get(key, default)
+    if not isinstance(value, (int, float)):
+        raise ConfigError(
+            f"Invalid `transports.slack.{key}` in {config_path}; "
+            "expected a number."
+        )
+    value = float(value)
+    if min_value is not None and value < min_value:
+        raise ConfigError(
+            f"Invalid `transports.slack.{key}` in {config_path}; "
+            f"expected >= {min_value}."
+        )
+    return value

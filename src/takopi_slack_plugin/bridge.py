@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs
 
@@ -39,13 +41,20 @@ from .commands.file_transfer import (
 )
 from .outbox import DELETE_PRIORITY, EDIT_PRIORITY, SEND_PRIORITY, OutboxOp, SlackOutbox
 from .overrides import REASONING_LEVELS, is_valid_reasoning_level, supports_reasoning
-from .thread_sessions import SlackThreadSessionStore
+from .thread_sessions import (
+    SlackThreadSessionStore,
+    ThreadSnapshot,
+    WorktreeSnapshot,
+)
 
 logger = get_logger(__name__)
 
 MAX_SLACK_TEXT = 3900
 MAX_BLOCK_TEXT = 2800
 CANCEL_ACTION_ID = "takopi-slack:cancel"
+STALE_WORKTREE_DELETE_ACTION_ID = "takopi-slack:worktree-delete"
+STALE_WORKTREE_SNOOZE_ACTION_ID = "takopi-slack:worktree-snooze"
+STALE_WORKTREE_DISMISS_ACTION_ID = "takopi-slack:worktree-dismiss"
 INLINE_COMMAND_RE = re.compile(
     r"(^|\s)(?P<token>/(?P<cmd>[a-z0-9_]{1,32}))",
     re.IGNORECASE,
@@ -128,6 +137,10 @@ class SlackBridgeConfig:
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
     thread_store: SlackThreadSessionStore | None = None
+    stale_worktree_reminder: bool = False
+    stale_worktree_hours: float = 24.0
+    stale_worktree_snooze_hours: float = 24.0
+    stale_worktree_check_interval_s: float = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,6 +532,55 @@ def _build_cancel_blocks(text: str) -> list[dict[str, Any]]:
     ]
 
 
+def _format_hours_label(hours: float) -> str:
+    if hours.is_integer():
+        return f"{int(hours)}h"
+    return f"{hours:g}h"
+
+
+def _build_stale_worktree_blocks(
+    text: str,
+    *,
+    thread_id: str,
+    snooze_hours: float,
+    include_actions: bool = True,
+) -> list[dict[str, Any]]:
+    body = _trim_block_text(text)
+    blocks: list[dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": body}}
+    ]
+    if not include_actions:
+        return blocks
+    snooze_label = f"snooze {_format_hours_label(snooze_hours)}"
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "delete worktree"},
+                    "action_id": STALE_WORKTREE_DELETE_ACTION_ID,
+                    "style": "danger",
+                    "value": thread_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": snooze_label},
+                    "action_id": STALE_WORKTREE_SNOOZE_ACTION_ID,
+                    "value": thread_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "dismiss"},
+                    "action_id": STALE_WORKTREE_DISMISS_ACTION_ID,
+                    "value": thread_id,
+                },
+            ],
+        }
+    )
+    return blocks
+
+
 def _mention_regex(bot_user_id: str) -> re.Pattern[str]:
     escaped = re.escape(bot_user_id)
     return re.compile(rf"<@{escaped}(\|[^>]+)?>")
@@ -685,6 +747,25 @@ async def _handle_slack_message(
                     channel_id=channel_id,
                     thread_id=thread_id,
                 )
+
+    if thread_store is not None and thread_id is not None:
+        worktree = None
+        if context is not None and context.project and context.branch:
+            worktree = WorktreeSnapshot(
+                project=context.project,
+                branch=context.branch,
+            )
+        clear_worktree = (
+            context is not None and context.project is not None and not context.branch
+        )
+        await thread_store.record_activity(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            user_id=message.user,
+            worktree=worktree,
+            clear_worktree=clear_worktree,
+            now=time.time(),
+        )
 
     if directives.project is None and directives.branch is not None and context is None:
         prompt = f"@{directives.branch} {prompt}".strip()
@@ -1321,10 +1402,288 @@ async def _handle_interactive(
 ) -> None:
     payload_type = payload.get("type")
     if payload_type == "block_actions":
+        if await _handle_stale_worktree_action(cfg, payload):
+            return
         await _handle_cancel_action(cfg, payload, running_tasks)
         return
     if payload_type in {"message_action", "shortcut"}:
         await _handle_shortcut(cfg, payload, running_tasks)
+
+
+def _extract_block_action(
+    actions: object,
+    *,
+    action_ids: set[str],
+) -> dict[str, Any] | None:
+    if not isinstance(actions, list):
+        return None
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_id = action.get("action_id")
+        if isinstance(action_id, str) and action_id in action_ids:
+            return action
+    return None
+
+
+def _extract_action_thread_id(
+    payload: dict[str, Any],
+    action: dict[str, Any],
+) -> str | None:
+    value = action.get("value")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    message = payload.get("message")
+    if isinstance(message, dict):
+        thread_ts = _parse_thread_ts(message.get("thread_ts"))
+        if thread_ts:
+            return thread_ts
+        ts = _parse_thread_ts(message.get("ts"))
+        if ts:
+            return ts
+    container = payload.get("container")
+    if isinstance(container, dict):
+        thread_ts = _parse_thread_ts(container.get("thread_ts"))
+        if thread_ts:
+            return thread_ts
+        ts = _parse_thread_ts(container.get("message_ts"))
+        if ts:
+            return ts
+    return None
+
+
+def _extract_action_message_ts(payload: dict[str, Any]) -> str | None:
+    message = payload.get("message")
+    if isinstance(message, dict):
+        ts = _parse_thread_ts(message.get("ts"))
+        if ts:
+            return ts
+    container = payload.get("container")
+    if isinstance(container, dict):
+        ts = _parse_thread_ts(container.get("message_ts"))
+        if ts:
+            return ts
+    return None
+
+
+async def _update_stale_worktree_message(
+    cfg: SlackBridgeConfig,
+    *,
+    channel_id: str,
+    message_ts: str | None,
+    thread_id: str,
+    text: str,
+    include_actions: bool,
+) -> None:
+    if message_ts is None:
+        return
+    blocks = _build_stale_worktree_blocks(
+        text,
+        thread_id=thread_id,
+        snooze_hours=cfg.stale_worktree_snooze_hours,
+        include_actions=include_actions,
+    )
+    await cfg.client.update_message(
+        channel_id=channel_id,
+        ts=message_ts,
+        text=text,
+        blocks=blocks,
+    )
+
+
+async def _delete_worktree_for_snapshot(
+    cfg: SlackBridgeConfig,
+    snapshot: ThreadSnapshot,
+) -> tuple[bool, str]:
+    worktree = snapshot.worktree
+    if worktree is None:
+        return False, "worktree data not found for this thread."
+    if worktree.branch.lower() in {"main", "master"}:
+        return False, "refusing to delete the main branch worktree."
+    try:
+        worktree_path = cfg.runtime.resolve_run_cwd(
+            RunContext(project=worktree.project, branch=worktree.branch)
+        )
+    except ConfigError as exc:
+        return False, f"could not resolve worktree path: {exc}"
+    path = _safely_resolve_path(worktree_path)
+    if path is None or not path.exists():
+        return False, "worktree path not found on disk."
+
+    base_path = None
+    try:
+        base_path = cfg.runtime.resolve_run_cwd(
+            RunContext(project=worktree.project, branch=None)
+        )
+    except ConfigError:
+        base_path = None
+    base = _safely_resolve_path(base_path)
+    if base is not None and base.resolve() == path.resolve():
+        return False, "refusing to delete the project base worktree."
+
+    code, stdout, stderr = await _run_git(
+        ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=path,
+    )
+    if code != 0:
+        details = stderr.strip() or stdout.strip()
+        return False, f"could not read worktree branch: {details}"
+    branch_name = stdout.strip()
+    if branch_name and branch_name != worktree.branch:
+        return False, (
+            f"worktree is on `{branch_name}`, expected `{worktree.branch}`."
+        )
+
+    code, stdout, stderr = await _run_git(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        cwd=path,
+    )
+    if code != 0:
+        details = stderr.strip() or stdout.strip()
+        return False, f"could not check worktree status: {details}"
+    if stdout.strip():
+        return False, "worktree has uncommitted changes; clean it before deleting."
+
+    code, stdout, stderr = await _run_git(
+        ["git", "-C", str(path), "worktree", "remove", str(path)],
+        cwd=path,
+    )
+    if code != 0:
+        details = stderr.strip() or stdout.strip()
+        return False, f"git worktree remove failed: {details}"
+
+    return True, "worktree deleted."
+
+
+async def _handle_stale_worktree_action(
+    cfg: SlackBridgeConfig,
+    payload: dict[str, Any],
+) -> bool:
+    actions = payload.get("actions")
+    action = _extract_block_action(
+        actions,
+        action_ids={
+            STALE_WORKTREE_DELETE_ACTION_ID,
+            STALE_WORKTREE_SNOOZE_ACTION_ID,
+            STALE_WORKTREE_DISMISS_ACTION_ID,
+        },
+    )
+    if action is None:
+        return False
+    if cfg.thread_store is None:
+        return True
+    channel = payload.get("channel") or {}
+    channel_id = channel.get("id") if isinstance(channel, dict) else None
+    if not isinstance(channel_id, str):
+        return True
+    thread_id = _extract_action_thread_id(payload, action)
+    if thread_id is None:
+        await _respond_ephemeral(
+            cfg,
+            response_url=payload.get("response_url")
+            if isinstance(payload.get("response_url"), str)
+            else None,
+            channel_id=channel_id,
+            text="missing thread id for this action.",
+        )
+        return True
+    message_ts = _extract_action_message_ts(payload)
+    snapshot = await cfg.thread_store.get_thread_snapshot(
+        channel_id=channel_id,
+        thread_id=thread_id,
+    )
+    if snapshot is None or snapshot.worktree is None:
+        await _update_stale_worktree_message(
+            cfg,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            thread_id=thread_id,
+            text="worktree info not found for this thread.",
+            include_actions=False,
+        )
+        return True
+
+    action_id = action.get("action_id")
+    user = payload.get("user") or {}
+    user_id = user.get("id") if isinstance(user, dict) else None
+
+    if action_id == STALE_WORKTREE_DELETE_ACTION_ID:
+        if (
+            snapshot.owner_user_id
+            and isinstance(user_id, str)
+            and user_id != snapshot.owner_user_id
+        ):
+            await _respond_ephemeral(
+                cfg,
+                response_url=payload.get("response_url")
+                if isinstance(payload.get("response_url"), str)
+                else None,
+                channel_id=channel_id,
+                text=f"only <@{snapshot.owner_user_id}> can delete this worktree.",
+            )
+            return True
+        ok, result = await _delete_worktree_for_snapshot(cfg, snapshot)
+        if ok:
+            await cfg.thread_store.clear_worktree(
+                channel_id=channel_id,
+                thread_id=thread_id,
+            )
+        text = (
+            f"{_format_worktree_ref(snapshot.worktree)} {result}"
+            if ok
+            else f"could not delete {_format_worktree_ref(snapshot.worktree)}: {result}"
+        )
+        await _update_stale_worktree_message(
+            cfg,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            thread_id=thread_id,
+            text=text,
+            include_actions=not ok,
+        )
+        return True
+
+    if action_id == STALE_WORKTREE_SNOOZE_ACTION_ID:
+        snoozed_until = time.time() + cfg.stale_worktree_snooze_hours * 3600.0
+        await cfg.thread_store.set_reminder_snoozed(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            snoozed_until=snoozed_until,
+        )
+        text = (
+            f"{_format_worktree_ref(snapshot.worktree)} snoozed for "
+            f"{_format_hours_label(cfg.stale_worktree_snooze_hours)}."
+        )
+        await _update_stale_worktree_message(
+            cfg,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            thread_id=thread_id,
+            text=text,
+            include_actions=True,
+        )
+        return True
+
+    if action_id == STALE_WORKTREE_DISMISS_ACTION_ID:
+        await cfg.thread_store.set_reminder_dismissed(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            dismissed_at=time.time(),
+        )
+        text = (
+            f"{_format_worktree_ref(snapshot.worktree)} reminder dismissed."
+        )
+        await _update_stale_worktree_message(
+            cfg,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            thread_id=thread_id,
+            text=text,
+            include_actions=False,
+        )
+        return True
+
+    return False
 
 
 async def _handle_cancel_action(
@@ -1523,6 +1882,137 @@ def _format_status(state: dict[str, object] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_worktree_ref(worktree: WorktreeSnapshot) -> str:
+    return f"`/{worktree.project}` `@{worktree.branch}`"
+
+
+def _format_stale_worktree_text(
+    *,
+    worktree: WorktreeSnapshot,
+    hours: float,
+    owner_user_id: str | None,
+    prefix: str | None = None,
+) -> str:
+    mention = f"<@{owner_user_id}> " if owner_user_id else ""
+    label = _format_worktree_ref(worktree)
+    hours_label = _format_hours_label(hours)
+    intro = prefix or "Worktree"
+    return f"{mention}{intro} {label} has been idle for {hours_label}. Delete it?"
+
+
+async def _run_git(
+    args: list[str],
+    *,
+    cwd: Path,
+) -> tuple[int, str, str]:
+    def _exec() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            args,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+        )
+
+    completed = await anyio.to_thread.run_sync(_exec)
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def _safely_resolve_path(path: Path | str | None) -> Path | None:
+    if path is None:
+        return None
+    try:
+        return Path(path)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _send_stale_worktree_reminder(
+    cfg: SlackBridgeConfig,
+    snapshot: ThreadSnapshot,
+    *,
+    now: float,
+) -> None:
+    if snapshot.worktree is None:
+        return
+    text = _format_stale_worktree_text(
+        worktree=snapshot.worktree,
+        hours=cfg.stale_worktree_hours,
+        owner_user_id=snapshot.owner_user_id,
+    )
+    blocks = _build_stale_worktree_blocks(
+        text,
+        thread_id=snapshot.thread_id,
+        snooze_hours=cfg.stale_worktree_snooze_hours,
+    )
+    message = RenderedMessage(text=text)
+    message.extra["blocks"] = blocks
+    sent = await cfg.exec_cfg.transport.send(
+        channel_id=snapshot.channel_id,
+        message=message,
+        options=SendOptions(thread_id=snapshot.thread_id),
+    )
+    if sent is None or cfg.thread_store is None:
+        return
+    await cfg.thread_store.set_reminder_sent(
+        channel_id=snapshot.channel_id,
+        thread_id=snapshot.thread_id,
+        message_ts=str(sent.message_id),
+        now=now,
+    )
+
+
+async def _run_stale_worktree_reminders(cfg: SlackBridgeConfig) -> None:
+    if not cfg.stale_worktree_reminder or cfg.thread_store is None:
+        return
+    interval_s = max(30.0, float(cfg.stale_worktree_check_interval_s))
+    stale_s = max(0.0, float(cfg.stale_worktree_hours) * 3600.0)
+    while True:
+        now = time.time()
+        try:
+            snapshots = await cfg.thread_store.list_thread_snapshots()
+        except Exception as exc:
+            logger.exception(
+                "slack.stale_worktree_scan_failed",
+                error=str(exc),
+                error_type=exc.__class__.__name__,
+            )
+            await anyio.sleep(interval_s)
+            continue
+
+        for snapshot in snapshots:
+            if snapshot.worktree is None or snapshot.last_activity_at is None:
+                continue
+            if now < snapshot.last_activity_at + stale_s:
+                continue
+            reminder = snapshot.reminder
+            if reminder is not None:
+                if (
+                    reminder.dismissed_at is not None
+                    and reminder.dismissed_at >= snapshot.last_activity_at
+                ):
+                    continue
+                if (
+                    reminder.snoozed_until is not None
+                    and now < reminder.snoozed_until
+                ):
+                    continue
+                if (
+                    reminder.snoozed_until is None
+                    and reminder.sent_at is not None
+                    and reminder.sent_at >= snapshot.last_activity_at
+                ):
+                    continue
+            try:
+                await _send_stale_worktree_reminder(cfg, snapshot, now=now)
+            except Exception as exc:
+                logger.exception(
+                    "slack.stale_worktree_send_failed",
+                    error=str(exc),
+                    error_type=exc.__class__.__name__,
+                )
+        await anyio.sleep(interval_s)
+
+
 async def _run_socket_loop(
     cfg: SlackBridgeConfig,
     *,
@@ -1538,6 +2028,8 @@ async def _run_socket_loop(
     backoff_s = 1.0
 
     async with anyio.create_task_group() as tg:
+        if cfg.stale_worktree_reminder and cfg.thread_store is not None:
+            tg.start_soon(_run_stale_worktree_reminders, cfg)
         while True:
             try:
                 socket_url = await open_socket_url(cfg.app_token)
