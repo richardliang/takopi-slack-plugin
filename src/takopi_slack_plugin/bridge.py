@@ -522,6 +522,17 @@ def _trim_block_text(text: str) -> str:
     return f"{text[: MAX_BLOCK_TEXT - 3]}..."
 
 
+def _split_block_text(text: str) -> list[str]:
+    if len(text) <= MAX_BLOCK_TEXT:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        chunks.append(text[start : start + MAX_BLOCK_TEXT])
+        start += MAX_BLOCK_TEXT
+    return chunks
+
+
 def _build_cancel_blocks(text: str) -> list[dict[str, Any]]:
     body = _trim_block_text(text)
     return [
@@ -553,10 +564,11 @@ def _build_archive_blocks(
     thread_id: str | None,
     include_actions: bool = True,
 ) -> list[dict[str, Any]]:
-    body = _trim_block_text(text)
     value = thread_id or ""
+    sections = _split_block_text(text)
     blocks: list[dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": body}}
+        {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
+        for chunk in sections
     ]
     if not include_actions:
         return blocks

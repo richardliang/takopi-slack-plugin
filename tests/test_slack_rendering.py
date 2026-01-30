@@ -1,11 +1,13 @@
 from takopi_slack_plugin.bridge import (
+    MAX_BLOCK_TEXT,
+    SlackPresenter,
+    _build_archive_blocks,
     _build_cancel_blocks,
     _format_elapsed,
     _render_final_text,
     _split_text,
     _trim_block_text,
     _trim_text,
-    SlackPresenter,
 )
 
 
@@ -43,6 +45,14 @@ def test_build_cancel_blocks() -> None:
     assert blocks[0]["type"] == "section"
     assert blocks[1]["type"] == "actions"
     assert blocks[1]["elements"][0]["action_id"].startswith("takopi-slack")
+
+
+def test_build_archive_blocks_splits_long_text() -> None:
+    text = "a" * (MAX_BLOCK_TEXT + 10)
+    blocks = _build_archive_blocks(text, thread_id="123")
+    sections = [block for block in blocks if block["type"] == "section"]
+    assert "".join(block["text"]["text"] for block in sections) == text
+    assert blocks[-1]["type"] == "actions"
 
 
 def test_presenter_split_followups() -> None:
