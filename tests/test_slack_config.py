@@ -21,6 +21,16 @@ def test_from_config_valid() -> None:
                 "style": "primary",
             }
         ],
+        "preview_repos": {
+            "zkp2p-mobile": {
+                "port": 8081,
+                "instructions": "start mobile app dev server",
+            },
+            "zkp2p-clients": {
+                "port": 3000,
+                "instructions": "start web subrepo dev server only",
+            },
+        },
         "files": {
             "enabled": True,
             "auto_put": False,
@@ -42,6 +52,12 @@ def test_from_config_valid() -> None:
     assert settings.action_buttons[0].command == "preview"
     assert settings.action_buttons[0].args == "start"
     assert settings.action_buttons[0].style == "primary"
+    assert settings.preview_repos["zkp2p-mobile"].port == 8081
+    assert (
+        settings.preview_repos["zkp2p-mobile"].instructions
+        == "start mobile app dev server"
+    )
+    assert settings.preview_repos["zkp2p-clients"].port == 3000
 
 
 def test_from_config_missing_key() -> None:
@@ -108,6 +124,17 @@ def test_from_config_duplicate_action_buttons() -> None:
             {"id": "preview", "command": "preview"},
             {"id": "preview", "command": "status"},
         ],
+    }
+    with pytest.raises(ConfigError):
+        SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
+
+
+def test_from_config_invalid_preview_repos() -> None:
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "preview_repos": "nope",
     }
     with pytest.raises(ConfigError):
         SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))

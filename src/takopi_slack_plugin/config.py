@@ -33,6 +33,12 @@ class SlackActionButton:
 
 
 @dataclass(frozen=True, slots=True)
+class SlackPreviewRepoSettings:
+    port: int
+    instructions: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SlackFilesSettings:
     enabled: bool = False
     auto_put: bool = True
@@ -133,6 +139,7 @@ class SlackTransportSettings:
     message_overflow: Literal["trim", "split"] = "split"
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
     action_buttons: list[SlackActionButton] = field(default_factory=list)
+    preview_repos: dict[str, SlackPreviewRepoSettings] = field(default_factory=dict)
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
     stale_worktree_check_interval_s: float = 600.0
@@ -174,6 +181,11 @@ class SlackTransportSettings:
             "action_buttons",
             config_path,
         )
+        preview_repos = _optional_preview_repos(
+            config,
+            "preview_repos",
+            config_path,
+        )
 
         stale_worktree_reminder = config.get("stale_worktree_reminder", False)
         if not isinstance(stale_worktree_reminder, bool):
@@ -204,6 +216,7 @@ class SlackTransportSettings:
             message_overflow=message_overflow,
             files=files,
             action_buttons=action_buttons,
+            preview_repos=preview_repos,
             stale_worktree_reminder=stale_worktree_reminder,
             stale_worktree_hours=stale_worktree_hours,
             stale_worktree_check_interval_s=stale_worktree_check_interval_s,
@@ -386,6 +399,78 @@ def _optional_action_buttons(
         )
 
     return buttons
+
+
+def _optional_preview_repos(
+    config: dict[str, Any],
+    key: str,
+    config_path: Path,
+) -> dict[str, SlackPreviewRepoSettings]:
+    if key not in config:
+        return {}
+    value = config.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f"Invalid `transports.slack.{key}` in {config_path}; expected a table."
+        )
+
+    preview_repos: dict[str, SlackPreviewRepoSettings] = {}
+    for raw_repo, raw_config in value.items():
+        if not isinstance(raw_repo, str) or not raw_repo.strip():
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}` in {config_path}; "
+                "expected repo names to be non-empty strings."
+            )
+        repo = raw_repo.strip().lower()
+        if repo in preview_repos:
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}` in {config_path}; "
+                f"duplicate repo name: {raw_repo}."
+            )
+        if not isinstance(raw_config, dict):
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}.{raw_repo}` in {config_path}; "
+                "expected a table."
+            )
+        allowed = {"port", "instructions"}
+        unknown_keys = set(raw_config) - allowed
+        if unknown_keys:
+            unknown = ", ".join(sorted(unknown_keys))
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}.{raw_repo}` in {config_path}; "
+                f"unknown keys: {unknown}."
+            )
+
+        port = raw_config.get("port")
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}.{raw_repo}.port` in {config_path}; "
+                "expected an integer."
+            )
+        if port < 1 or port > 65535:
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}.{raw_repo}.port` in {config_path}; "
+                "expected 1-65535."
+            )
+
+        instructions = raw_config.get("instructions", "")
+        if instructions is None:
+            instructions = ""
+        if not isinstance(instructions, str):
+            raise ConfigError(
+                f"Invalid `transports.slack.{key}.{raw_repo}.instructions` in {config_path}; "
+                "expected a string."
+            )
+        instructions = instructions.strip()
+
+        preview_repos[repo] = SlackPreviewRepoSettings(
+            port=port,
+            instructions=instructions,
+        )
+
+    return preview_repos
 
 
 def _slugify_action_id(value: str) -> str:

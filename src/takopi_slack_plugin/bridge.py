@@ -32,7 +32,11 @@ from takopi.runners.run_options import EngineRunOptions
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
 from .commands import dispatch_command, split_command_args
-from .config import SlackActionButton, SlackFilesSettings
+from .config import (
+    SlackActionButton,
+    SlackFilesSettings,
+    SlackPreviewRepoSettings,
+)
 from .engine import run_engine, send_plain
 from .commands.file_transfer import (
     extract_files,
@@ -137,6 +141,7 @@ class SlackBridgeConfig:
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
     action_buttons: list[SlackActionButton] = field(default_factory=list)
+    preview_repos: dict[str, SlackPreviewRepoSettings] = field(default_factory=dict)
     thread_store: SlackThreadSessionStore | None = None
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
@@ -1780,6 +1785,12 @@ async def _handle_custom_action(
             reply_text = message_text
 
     args_text = button.args
+    if button.command == "preview":
+        args_text = _apply_preview_repo_args(
+            cfg,
+            args_text=args_text,
+            context=command_context.default_context,
+        )
     full_text = f"/{button.command} {args_text}".strip()
     handled = await dispatch_command(
         cfg,
@@ -1805,6 +1816,27 @@ async def _handle_custom_action(
             text=f"unknown command `{button.command}`.",
         )
     return True
+
+
+def _apply_preview_repo_args(
+    cfg: SlackBridgeConfig,
+    *,
+    args_text: str,
+    context: RunContext | None,
+) -> str:
+    if context is None or not context.project:
+        return args_text
+    preview = cfg.preview_repos.get(context.project.lower())
+    if preview is None:
+        return args_text
+
+    extra = str(preview.port)
+    if preview.instructions:
+        extra = f"{extra} {preview.instructions}"
+
+    if not args_text:
+        return extra
+    return f"{args_text} {extra}".strip()
 
 
 async def _delete_worktree_for_snapshot(
