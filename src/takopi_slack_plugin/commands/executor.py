@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
@@ -169,6 +170,9 @@ class SlackCommandExecutor(CommandExecutor):
             run_options=run_options,
         )
         return RunResult(engine=engine, message=None)
+
+    def run_background(self, request: RunRequest) -> asyncio.Task[RunResult]:
+        return asyncio.create_task(self.run_one(request))
 
     async def run_many(
         self,
