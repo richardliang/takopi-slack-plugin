@@ -43,6 +43,7 @@ async def dispatch_command(
     default_context,
     engine_overrides_resolver: Callable[[EngineId], Awaitable[EngineRunOptions | None]]
     | None,
+    env_overrides: dict[str, str] | None,
 ) -> bool:
     allowlist = cfg.runtime.allowlist
 
@@ -52,6 +53,7 @@ async def dispatch_command(
         running_tasks=running_tasks,
         on_thread_known=on_thread_known,
         engine_overrides_resolver=engine_overrides_resolver,
+        env_overrides=env_overrides,
         channel_id=channel_id,
         user_msg_id=message_id,
         thread_id=thread_id,

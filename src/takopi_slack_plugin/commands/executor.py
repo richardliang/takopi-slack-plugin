@@ -62,6 +62,7 @@ class SlackCommandExecutor(CommandExecutor):
     engine_overrides_resolver: Callable[
         [EngineId], Awaitable[EngineRunOptions | None]
     ] | None
+    env_overrides: dict[str, str] | None
     channel_id: str
     user_msg_id: str
     thread_id: str | None
@@ -151,6 +152,7 @@ class SlackCommandExecutor(CommandExecutor):
                 thread_id=self.thread_id,
                 on_thread_known=self.on_thread_known,
                 run_options=run_options,
+                env_overrides=self.env_overrides,
             )
             return RunResult(engine=engine, message=capture.last_message)
 
@@ -167,6 +169,7 @@ class SlackCommandExecutor(CommandExecutor):
             thread_id=self.thread_id,
             on_thread_known=self.on_thread_known,
             run_options=run_options,
+            env_overrides=self.env_overrides,
         )
         return RunResult(engine=engine, message=None)
 

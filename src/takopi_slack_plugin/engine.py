@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+import os
 from typing import Any, Awaitable, Callable
 
 import anyio
@@ -22,6 +25,30 @@ from takopi.api import (
     set_run_base_dir,
 )
 from takopi.runners.run_options import EngineRunOptions, apply_run_options
+
+
+# Serialize runs to avoid leaking per-user env overrides across concurrent runs.
+_RUN_ENV_LOCK = anyio.Lock()
+
+
+@asynccontextmanager
+async def _apply_env_overrides(
+    env_overrides: dict[str, str] | None,
+) -> AsyncIterator[None]:
+    async with _RUN_ENV_LOCK:
+        if not env_overrides:
+            yield
+            return
+        previous = {key: os.environ.get(key) for key in env_overrides}
+        os.environ.update(env_overrides)
+        try:
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 async def send_plain(
@@ -59,6 +86,7 @@ async def run_engine(
     thread_id: str | None,
     on_thread_known: Callable[[Any, anyio.Event], Awaitable[None]] | None = None,
     run_options: EngineRunOptions | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> None:
     try:
         try:
@@ -124,18 +152,19 @@ async def run_engine(
                 text=text,
                 thread_id=thread_id,
             )
-            with apply_run_options(run_options):
-                await handle_message(
-                    exec_cfg,
-                    runner=runner,
-                    incoming=incoming,
-                    resume_token=resume_token,
-                    context=context,
-                    context_line=context_line,
-                    strip_resume_line=runtime.is_resume_line,
-                    running_tasks=running_tasks,
-                    on_thread_known=on_thread_known,
-                )
+            async with _apply_env_overrides(env_overrides):
+                with apply_run_options(run_options):
+                    await handle_message(
+                        exec_cfg,
+                        runner=runner,
+                        incoming=incoming,
+                        resume_token=resume_token,
+                        context=context,
+                        context_line=context_line,
+                        strip_resume_line=runtime.is_resume_line,
+                        running_tasks=running_tasks,
+                        on_thread_known=on_thread_known,
+                    )
         finally:
             reset_run_base_dir(run_base_token)
     finally:
