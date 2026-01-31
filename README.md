@@ -66,7 +66,7 @@ stale_worktree_reminder = true
 stale_worktree_hours = 24
 stale_worktree_check_interval_s = 600
 action_buttons = [
-  { id = "preview", label = "Preview", command = "preview", args = "start 3000 --dev \"pnpm --filter @zkp2p/web dev -- --host 127.0.0.1 --port {port}\"", style = "primary" },
+  { id = "preview", label = "Preview", command = "preview", args = "start", style = "primary" },
 ]
 
 [transports.slack.files]
@@ -82,9 +82,7 @@ set `message_overflow = "trim"` if you prefer truncation instead of followups.
 archive button. `command` is the takopi command id (you can also pass
 `takopi-foo` and it will normalize to `foo`). `label` and `args` are optional
 (defaults: `label = command`, `args = ""`). `style` may be `primary` or
-`danger`. limit is 4 buttons. The preview command expects a port argument, so
-include it in `args` if you want the Preview button to work without typing
-`/preview start <port>` manually.
+`danger`. limit is 4 buttons.
 
 if you use a plugin allowlist, enable this distribution:
 
