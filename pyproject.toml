@@ -1,6 +1,6 @@
 [project]
 name = "takopi-slack-plugin"
-version = "0.2.4"
+version = "0.2.5"
 description = "Slack transport plugin for Takopi."
 readme = "README.md"
 license = { file = "LICENSE" }
