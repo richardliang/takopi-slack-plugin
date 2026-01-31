@@ -49,6 +49,16 @@ def test_build_cancel_blocks() -> None:
     assert blocks[1]["elements"][0]["action_id"].startswith("takopi-slack")
 
 
+def test_build_cancel_blocks_with_context() -> None:
+    blocks = _build_cancel_blocks(
+        "hello",
+        context_blocks=[["repo: /demo @main"], ["status: working"]],
+    )
+    assert blocks[0]["type"] == "section"
+    assert blocks[1]["type"] == "context"
+    assert blocks[-1]["type"] == "actions"
+
+
 def test_build_archive_blocks_splits_long_text() -> None:
     text = "a" * (MAX_BLOCK_TEXT + 10)
     blocks = _build_archive_blocks(text, thread_id="123")

@@ -91,6 +91,11 @@ class SlackPresenter:
             max_actions=self._max_actions,
         )
         rendered = RenderedMessage(text=_trim_text(text, self._max_chars))
+        rendered.extra["context_blocks"] = _build_run_context_blocks(
+            state,
+            label=label,
+            elapsed_s=elapsed_s,
+        )
         show_cancel = not _is_cancelled_label(label)
         rendered.extra["show_cancel"] = show_cancel
         if not show_cancel:
@@ -116,6 +121,11 @@ class SlackPresenter:
             message = RenderedMessage(text=chunks[0])
             message.extra["clear_blocks"] = True
             message.extra["show_archive"] = True
+            message.extra["context_blocks"] = _build_run_context_blocks(
+                state,
+                label=status,
+                elapsed_s=elapsed_s,
+            )
             if len(chunks) > 1:
                 message.extra["followups"] = [
                     RenderedMessage(text=chunk) for chunk in chunks[1:]
@@ -124,6 +134,11 @@ class SlackPresenter:
         rendered = RenderedMessage(text=_trim_text(text, self._max_chars))
         rendered.extra["clear_blocks"] = True
         rendered.extra["show_archive"] = True
+        rendered.extra["context_blocks"] = _build_run_context_blocks(
+            state,
+            label=status,
+            elapsed_s=elapsed_s,
+        )
         return rendered
 
 
@@ -190,16 +205,21 @@ class SlackTransport:
         thread_id: str | None,
     ) -> list[dict[str, Any]] | None:
         extra = message.extra
+        context_blocks = extra.get("context_blocks")
         blocks = extra.get("blocks")
         if isinstance(blocks, list):
             return blocks
         if extra.get("show_cancel"):
-            return _build_cancel_blocks(message.text)
+            return _build_cancel_blocks(
+                message.text,
+                context_blocks=context_blocks,
+            )
         if extra.get("show_archive"):
             return _build_archive_blocks(
                 message.text,
                 thread_id=thread_id,
                 action_buttons=self._action_buttons,
+                context_blocks=context_blocks,
             )
         if allow_clear and extra.get("clear_blocks"):
             return []
@@ -502,6 +522,49 @@ def _render_final_text(
     return _assemble_sections(header, body, footer)
 
 
+def _format_repo_context_line(context_line: str) -> str:
+    trimmed = context_line.strip()
+    wrapped = trimmed.startswith("`") and trimmed.endswith("`") and len(trimmed) > 1
+    inner = trimmed[1:-1] if wrapped else trimmed
+    inner = inner.strip()
+    if inner.lower().startswith("ctx:"):
+        inner = inner[4:].strip()
+    if wrapped:
+        inner = f"`{inner}`"
+    return f"*repo:* {inner}"
+
+
+def _build_run_context_blocks(
+    state,
+    *,
+    label: str,
+    elapsed_s: float,
+) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    repo_items: list[str] = []
+    context_line = getattr(state, "context_line", None)
+    if isinstance(context_line, str) and context_line.strip():
+        repo_items.append(_format_repo_context_line(context_line))
+    resume_line = getattr(state, "resume_line", None)
+    if isinstance(resume_line, str) and resume_line.strip():
+        repo_items.append(resume_line.strip())
+    if repo_items:
+        blocks.append(repo_items)
+    status_items: list[str] = []
+    if label:
+        status_items.append(f"*status:* {label}")
+    engine = getattr(state, "engine", None)
+    if isinstance(engine, str) and engine:
+        status_items.append(f"*engine:* {engine}")
+    status_items.append(f"*elapsed:* {_format_elapsed(elapsed_s)}")
+    step = getattr(state, "action_count", None)
+    if isinstance(step, int) and step > 0:
+        status_items.append(f"*step:* {step}")
+    if status_items:
+        blocks.append([" · ".join(status_items)])
+    return blocks
+
+
 def _trim_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
@@ -544,10 +607,40 @@ def _split_block_text(text: str) -> list[str]:
     return chunks
 
 
-def _build_cancel_blocks(text: str) -> list[dict[str, Any]]:
+def _build_context_blocks(
+    context_blocks: Sequence[Sequence[str] | str] | None,
+) -> list[dict[str, Any]]:
+    if not context_blocks:
+        return []
+    blocks: list[dict[str, Any]] = []
+    for block in context_blocks:
+        if isinstance(block, str):
+            items = [block]
+        elif isinstance(block, Sequence):
+            items = [item for item in block if isinstance(item, str)]
+        else:
+            continue
+        elements = [
+            {"type": "mrkdwn", "text": _trim_block_text(item.strip())}
+            for item in items
+            if isinstance(item, str) and item.strip()
+        ]
+        if elements:
+            blocks.append({"type": "context", "elements": elements})
+    return blocks
+
+
+def _build_cancel_blocks(
+    text: str,
+    *,
+    context_blocks: Sequence[Sequence[str] | str] | None = None,
+) -> list[dict[str, Any]]:
     body = _trim_block_text(text)
-    return [
+    blocks = [
         {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+    ]
+    blocks.extend(_build_context_blocks(context_blocks))
+    blocks.append(
         {
             "type": "actions",
             "elements": [
@@ -559,8 +652,9 @@ def _build_cancel_blocks(text: str) -> list[dict[str, Any]]:
                     "value": "cancel",
                 }
             ],
-        },
-    ]
+        }
+    )
+    return blocks
 
 
 def _format_hours_label(hours: float) -> str:
@@ -575,6 +669,7 @@ def _build_archive_blocks(
     thread_id: str | None,
     action_buttons: Sequence[SlackActionButton] | None = None,
     include_actions: bool = True,
+    context_blocks: Sequence[Sequence[str] | str] | None = None,
 ) -> list[dict[str, Any]]:
     value = thread_id or ""
     sections = _split_block_text(text)
@@ -582,6 +677,7 @@ def _build_archive_blocks(
         {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
         for chunk in sections
     ]
+    blocks.extend(_build_context_blocks(context_blocks))
     if not include_actions:
         return blocks
     buttons = list(action_buttons or [])
