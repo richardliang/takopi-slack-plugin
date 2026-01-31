@@ -133,6 +133,7 @@ class SlackTransportSettings:
     message_overflow: Literal["trim", "split"] = "split"
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
     action_buttons: list[SlackActionButton] = field(default_factory=list)
+    github_user_tokens: dict[str, str] = field(default_factory=dict)
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
     stale_worktree_check_interval_s: float = 600.0
@@ -175,6 +176,14 @@ class SlackTransportSettings:
             config_path,
         )
 
+        github_user_tokens = _optional_str_dict(
+            config,
+            "github_user_tokens",
+            {},
+            config_path,
+            label="transports.slack.github_user_tokens",
+        )
+
         stale_worktree_reminder = config.get("stale_worktree_reminder", False)
         if not isinstance(stale_worktree_reminder, bool):
             raise ConfigError(
@@ -204,6 +213,7 @@ class SlackTransportSettings:
             message_overflow=message_overflow,
             files=files,
             action_buttons=action_buttons,
+            github_user_tokens=github_user_tokens,
             stale_worktree_reminder=stale_worktree_reminder,
             stale_worktree_hours=stale_worktree_hours,
             stale_worktree_check_interval_s=stale_worktree_check_interval_s,
@@ -274,6 +284,39 @@ def _optional_str_list(
         name = label or f"transports.slack.{key}"
         raise ConfigError(f"Invalid `{name}` in {config_path}; expected a list of strings.")
     return [item.strip() for item in value if item.strip()]
+
+
+def _optional_str_dict(
+    config: dict[str, Any],
+    key: str,
+    default: dict[str, str],
+    config_path: Path,
+    *,
+    label: str | None = None,
+) -> dict[str, str]:
+    if key not in config:
+        return dict(default)
+    value = config.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        name = label or f"transports.slack.{key}"
+        raise ConfigError(f"Invalid `{name}` in {config_path}; expected a table.")
+    cleaned: dict[str, str] = {}
+    name = label or f"transports.slack.{key}"
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_value, str):
+            raise ConfigError(
+                f"Invalid `{name}` in {config_path}; expected a table of strings."
+            )
+        user_id = raw_key.strip()
+        token = raw_value.strip()
+        if not user_id or not token:
+            raise ConfigError(
+                f"Invalid `{name}` in {config_path}; expected non-empty strings."
+            )
+        cleaned[user_id] = token
+    return cleaned
 
 
 def _optional_action_buttons(

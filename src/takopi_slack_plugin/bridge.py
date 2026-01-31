@@ -137,6 +137,7 @@ class SlackBridgeConfig:
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
     action_buttons: list[SlackActionButton] = field(default_factory=list)
+    github_user_tokens: dict[str, str] = field(default_factory=dict)
     thread_store: SlackThreadSessionStore | None = None
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
@@ -832,6 +833,7 @@ async def _handle_slack_message(
                 cfg,
                 channel_id=channel_id,
                 thread_id=thread_id,
+                user_id=message.user,
             )
         default_context = context
         if default_context is None and command_context is not None:
@@ -896,6 +898,8 @@ async def _handle_slack_message(
         channel_id=channel_id,
         thread_id=thread_id,
         engine_id=engine_for_session,
+        user_id=message.user,
+        github_user_tokens=cfg.github_user_tokens,
     )
     on_thread_known = _make_resume_saver(
         thread_store,
@@ -1063,21 +1067,29 @@ async def _resolve_run_options(
     channel_id: str,
     thread_id: str | None,
     engine_id: str,
+    user_id: str | None,
+    github_user_tokens: dict[str, str],
 ) -> EngineRunOptions | None:
-    if thread_store is None or thread_id is None:
-        return None
-    model = await thread_store.get_model_override(
-        channel_id=channel_id,
-        thread_id=thread_id,
-        engine=engine_id,
-    )
-    reasoning = await thread_store.get_reasoning_override(
-        channel_id=channel_id,
-        thread_id=thread_id,
-        engine=engine_id,
-    )
-    if model or reasoning:
-        return EngineRunOptions(model=model, reasoning=reasoning)
+    model = None
+    reasoning = None
+    if thread_store is not None and thread_id is not None:
+        model = await thread_store.get_model_override(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            engine=engine_id,
+        )
+        reasoning = await thread_store.get_reasoning_override(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            engine=engine_id,
+        )
+    env = None
+    if user_id:
+        token = github_user_tokens.get(user_id)
+        if token:
+            env = {"GITHUB_TOKEN": token, "GH_TOKEN": token}
+    if model or reasoning or env:
+        return EngineRunOptions(model=model, reasoning=reasoning, env=env)
     return None
 
 
@@ -1106,6 +1118,7 @@ async def _resolve_command_context(
     *,
     channel_id: str,
     thread_id: str,
+    user_id: str | None,
 ) -> CommandContext | None:
     thread_store = cfg.thread_store
     if thread_store is None:
@@ -1127,6 +1140,8 @@ async def _resolve_command_context(
             channel_id=channel_id,
             thread_id=thread_id,
             engine_id=engine_id,
+            user_id=user_id,
+            github_user_tokens=cfg.github_user_tokens,
         )
     on_thread_known = _make_resume_saver(
         thread_store,
@@ -1180,6 +1195,10 @@ async def _handle_slash_command(
         )
         return
 
+    user_id = payload.get("user_id")
+    if not isinstance(user_id, str):
+        user_id = None
+
     thread_store = cfg.thread_store
     if command_id == "file":
         command_context = None
@@ -1188,10 +1207,8 @@ async def _handle_slash_command(
                 cfg,
                 channel_id=channel_id,
                 thread_id=thread_id,
+                user_id=user_id,
             )
-        user_id = payload.get("user_id")
-        if not isinstance(user_id, str):
-            user_id = None
         await handle_file_command(
             cfg,
             channel_id=channel_id,
@@ -1394,6 +1411,7 @@ async def _handle_slash_command(
         cfg,
         channel_id=channel_id,
         thread_id=thread_id,
+        user_id=user_id,
     )
     if command_context is None:
         return
@@ -1748,10 +1766,15 @@ async def _handle_custom_action(
     if thread_ts is None:
         thread_ts = _extract_payload_thread_id(payload)
     thread_id = _session_thread_id(channel_id, thread_ts)
+    user = payload.get("user") or {}
+    user_id = user.get("id") if isinstance(user, dict) else None
+    if not isinstance(user_id, str):
+        user_id = None
     command_context = await _resolve_command_context(
         cfg,
         channel_id=channel_id,
         thread_id=thread_id,
+        user_id=user_id,
     )
     if command_context is None:
         return True
@@ -1965,10 +1988,15 @@ async def _handle_shortcut(
         )
 
     thread_id = _session_thread_id(channel_id, thread_ts)
+    user = payload.get("user") or {}
+    user_id = user.get("id") if isinstance(user, dict) else None
+    if not isinstance(user_id, str):
+        user_id = None
     command_context = await _resolve_command_context(
         cfg,
         channel_id=channel_id,
         thread_id=thread_id,
+        user_id=user_id,
     )
     if command_context is None:
         return

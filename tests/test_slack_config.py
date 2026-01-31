@@ -21,6 +21,7 @@ def test_from_config_valid() -> None:
                 "style": "primary",
             }
         ],
+        "github_user_tokens": {"U123": "ghp_123"},
         "files": {
             "enabled": True,
             "auto_put": False,
@@ -38,6 +39,7 @@ def test_from_config_valid() -> None:
     assert settings.files.auto_put is False
     assert settings.files.auto_put_mode == "prompt"
     assert settings.files.allowed_user_ids == ["U123"]
+    assert settings.github_user_tokens == {"U123": "ghp_123"}
     assert settings.action_buttons[0].label == "Preview"
     assert settings.action_buttons[0].command == "preview"
     assert settings.action_buttons[0].args == "start"
@@ -108,6 +110,17 @@ def test_from_config_duplicate_action_buttons() -> None:
             {"id": "preview", "command": "preview"},
             {"id": "preview", "command": "status"},
         ],
+    }
+    with pytest.raises(ConfigError):
+        SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
+
+
+def test_from_config_invalid_github_user_tokens() -> None:
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "github_user_tokens": {"U123": 123},
     }
     with pytest.raises(ConfigError):
         SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))

@@ -68,6 +68,7 @@ stale_worktree_check_interval_s = 600
 action_buttons = [
   { id = "preview", label = "Preview", command = "preview", args = "start", style = "primary" },
 ]
+github_user_tokens = { U123 = "ghp_...", U456 = "ghp_..." }
 
 [transports.slack.files]
 enabled = false
@@ -75,6 +76,9 @@ auto_put = true
 auto_put_mode = "upload"
 uploads_dir = "incoming"
 ```
+
+`github_user_tokens` maps Slack user IDs to GitHub tokens for per-user runs. The
+bridge sets `GITHUB_TOKEN` and `GH_TOKEN` for runs from that user.
 
 set `message_overflow = "trim"` if you prefer truncation instead of followups.
 

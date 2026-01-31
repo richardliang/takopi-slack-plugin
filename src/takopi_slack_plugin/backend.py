@@ -149,6 +149,7 @@ class SlackBackend(TransportBackend):
             exec_cfg=exec_cfg,
             files=settings.files,
             action_buttons=settings.action_buttons,
+            github_user_tokens=settings.github_user_tokens,
             thread_store=thread_store,
             stale_worktree_reminder=settings.stale_worktree_reminder,
             stale_worktree_hours=settings.stale_worktree_hours,
