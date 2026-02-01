@@ -50,7 +50,7 @@ def test_build_archive_blocks_splits_long_text() -> None:
     blocks = _build_archive_blocks(text, thread_id="123")
     sections = [block for block in blocks if block["type"] == "section"]
     assert "".join(block["text"]["text"] for block in sections) == text
-    assert blocks[-1]["type"] == "actions"
+    assert all(block["type"] == "section" for block in blocks)
 
 
 def test_build_archive_blocks_uses_action_blocks() -> None:

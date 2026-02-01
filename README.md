@@ -108,6 +108,9 @@ default actions. Use `action_id = "takopi-slack:archive"` for the archive
 action, and `action_id = "takopi-slack:action:<id>"` to map to entries in
 `action_handlers`.
 
+Archive now requires confirmation: clicking `takopi-slack:archive` posts a
+confirm/cancel prompt before deleting the worktree.
+
 if you use a plugin allowlist, enable this distribution:
 
 ```toml
