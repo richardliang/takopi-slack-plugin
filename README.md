@@ -65,9 +65,29 @@ message_overflow = "split"
 stale_worktree_reminder = true
 stale_worktree_hours = 24
 stale_worktree_check_interval_s = 600
-action_buttons = [
-  { id = "preview", label = "Preview", command = "preview", args = "start", style = "primary" },
+action_handlers = [
+  { id = "preview", command = "preview", args = "start" },
 ]
+action_blocks = """
+[
+  {
+    "type": "actions",
+    "elements": [
+      {
+        "type": "button",
+        "text": { "type": "plain_text", "text": "Preview" },
+        "action_id": "takopi-slack:action:preview",
+        "style": "primary"
+      },
+      {
+        "type": "button",
+        "text": { "type": "plain_text", "text": "archive" },
+        "action_id": "takopi-slack:archive"
+      }
+    ]
+  }
+]
+"""
 
 [transports.slack.files]
 enabled = false
@@ -78,11 +98,19 @@ uploads_dir = "incoming"
 
 set `message_overflow = "trim"` if you prefer truncation instead of followups.
 
-`action_buttons` entries map to `/<command> <args>` and show inline next to the
-archive button. `command` is the takopi command id (you can also pass
-`takopi-foo` and it will normalize to `foo`). `label` and `args` are optional
-(defaults: `label = command`, `args = ""`). `style` may be `primary` or
-`danger`. limit is 4 buttons.
+`action_handlers` maps arbitrary Block Kit `action_id` values to Takopi
+commands. Use `action_id` for full control, or `id` to generate
+`takopi-slack:action:<id>`. There is no built-in limit.
+
+`action_blocks` lets you provide raw Block Kit JSON (as a JSON string, or
+`@/path/to/blocks.json`) to render alongside the message text instead of the
+default actions. Use `action_id = "takopi-slack:archive"` for the archive
+action, and `action_id = "takopi-slack:action:<id>"` to map to entries in
+`action_handlers`.
+
+Archive now requires confirmation: clicking `takopi-slack:archive` posts a
+confirm/cancel prompt, and confirmation deletes the worktree (discarding local
+changes).
 
 if you use a plugin allowlist, enable this distribution:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,20 +17,13 @@ DEFAULT_DENY_GLOBS = [
 ]
 
 _ACTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
-_MAX_CUSTOM_ACTIONS = 4
 
 
 @dataclass(frozen=True, slots=True)
-class SlackActionButton:
-    id: str
-    label: str
+class SlackActionHandler:
+    action_id: str
     command: str
     args: str = ""
-    style: Literal["primary", "danger"] | None = None
-
-    @property
-    def action_id(self) -> str:
-        return f"takopi-slack:action:{self.id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +126,8 @@ class SlackTransportSettings:
     app_token: str
     message_overflow: Literal["trim", "split"] = "split"
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
-    action_buttons: list[SlackActionButton] = field(default_factory=list)
+    action_handlers: list[SlackActionHandler] = field(default_factory=list)
+    action_blocks: list[dict[str, Any]] | None = None
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
     stale_worktree_check_interval_s: float = 600.0
@@ -146,6 +141,17 @@ class SlackTransportSettings:
         if not isinstance(config, dict):
             raise ConfigError(
                 f"Invalid `transports.slack` in {config_path}; expected a table."
+            )
+        if "action_buttons" in config:
+            raise ConfigError(
+                f"Invalid `transports.slack.action_buttons` in {config_path}; "
+                "action_buttons is no longer supported. Use action_handlers + "
+                "action_blocks instead."
+            )
+        if "show_running" in config:
+            raise ConfigError(
+                f"Invalid `transports.slack.show_running` in {config_path}; "
+                "show_running is no longer supported."
             )
 
         bot_token = _require_str(config, "bot_token", config_path=config_path)
@@ -169,9 +175,14 @@ class SlackTransportSettings:
             config.get("files"), config_path=config_path
         )
 
-        action_buttons = _optional_action_buttons(
+        action_handlers = _optional_action_handlers(
             config,
-            "action_buttons",
+            "action_handlers",
+            config_path,
+        )
+        action_blocks = _optional_action_blocks(
+            config,
+            "action_blocks",
             config_path,
         )
 
@@ -203,7 +214,8 @@ class SlackTransportSettings:
             app_token=app_token,
             message_overflow=message_overflow,
             files=files,
-            action_buttons=action_buttons,
+            action_handlers=action_handlers,
+            action_blocks=action_blocks,
             stale_worktree_reminder=stale_worktree_reminder,
             stale_worktree_hours=stale_worktree_hours,
             stale_worktree_check_interval_s=stale_worktree_check_interval_s,
@@ -276,11 +288,11 @@ def _optional_str_list(
     return [item.strip() for item in value if item.strip()]
 
 
-def _optional_action_buttons(
+def _optional_action_handlers(
     config: dict[str, Any],
     key: str,
     config_path: Path,
-) -> list[SlackActionButton]:
+) -> list[SlackActionHandler]:
     if key not in config:
         return []
     value = config.get(key)
@@ -291,8 +303,7 @@ def _optional_action_buttons(
             f"Invalid `transports.slack.{key}` in {config_path}; "
             "expected a list of tables."
         )
-
-    buttons: list[SlackActionButton] = []
+    handlers: list[SlackActionHandler] = []
     seen_ids: set[str] = set()
     for idx, raw in enumerate(value, start=1):
         if not isinstance(raw, dict):
@@ -300,7 +311,7 @@ def _optional_action_buttons(
                 f"Invalid `transports.slack.{key}[{idx}]` in {config_path}; "
                 "expected a table."
             )
-        allowed = {"id", "label", "command", "args", "style"}
+        allowed = {"action_id", "id", "command", "args"}
         unknown_keys = set(raw) - allowed
         if unknown_keys:
             unknown = ", ".join(sorted(unknown_keys))
@@ -321,31 +332,30 @@ def _optional_action_buttons(
                 command = command[len(prefix) :]
                 break
 
-        label = raw.get("label")
-        if label is None:
-            label = command
-        if not isinstance(label, str) or not label.strip():
-            raise ConfigError(
-                f"Invalid `transports.slack.{key}[{idx}].label` in {config_path}; "
-                "expected a non-empty string."
-            )
-        label = label.strip()
+        action_id_value = raw.get("action_id")
+        if action_id_value is None:
+            action_id_value = raw.get("id")
+            if not isinstance(action_id_value, str) or not action_id_value.strip():
+                raise ConfigError(
+                    f"Invalid `transports.slack.{key}[{idx}].action_id` in {config_path}; "
+                    "expected a non-empty string."
+                )
+            action_id = _slugify_action_id(action_id_value)
+            action_id = f"takopi-slack:action:{action_id}"
+        else:
+            if not isinstance(action_id_value, str) or not action_id_value.strip():
+                raise ConfigError(
+                    f"Invalid `transports.slack.{key}[{idx}].action_id` in {config_path}; "
+                    "expected a non-empty string."
+                )
+            action_id = action_id_value.strip()
 
-        button_id = raw.get("id")
-        if button_id is None:
-            button_id = label
-        if not isinstance(button_id, str) or not button_id.strip():
+        if action_id in seen_ids:
             raise ConfigError(
-                f"Invalid `transports.slack.{key}[{idx}].id` in {config_path}; "
-                "expected a non-empty string."
+                f"Invalid `transports.slack.{key}[{idx}].action_id` in {config_path}; "
+                "duplicate action_id."
             )
-        button_id = _slugify_action_id(button_id)
-        if button_id in seen_ids:
-            raise ConfigError(
-                f"Invalid `transports.slack.{key}[{idx}].id` in {config_path}; "
-                "duplicate id."
-            )
-        seen_ids.add(button_id)
+        seen_ids.add(action_id)
 
         args = raw.get("args", "")
         if not isinstance(args, str):
@@ -355,37 +365,69 @@ def _optional_action_buttons(
             )
         args = args.strip()
 
-        style = raw.get("style")
-        if style is not None:
-            if not isinstance(style, str):
-                raise ConfigError(
-                    f"Invalid `transports.slack.{key}[{idx}].style` in {config_path}; "
-                    "expected a string."
-                )
-            style = style.strip().lower()
-            if style not in {"primary", "danger"}:
-                raise ConfigError(
-                    f"Invalid `transports.slack.{key}[{idx}].style` in {config_path}; "
-                    "expected 'primary' or 'danger'."
-                )
-
-        buttons.append(
-            SlackActionButton(
-                id=button_id,
-                label=label,
+        handlers.append(
+            SlackActionHandler(
+                action_id=action_id,
                 command=command,
                 args=args,
-                style=style,
             )
         )
 
-    if len(buttons) > _MAX_CUSTOM_ACTIONS:
-        raise ConfigError(
-            f"Invalid `transports.slack.{key}` in {config_path}; "
-            f"expected at most {_MAX_CUSTOM_ACTIONS} buttons."
-        )
+    return handlers
 
-    return buttons
+
+def _optional_action_blocks(
+    config: dict[str, Any],
+    key: str,
+    config_path: Path,
+) -> list[dict[str, Any]] | None:
+    if key not in config:
+        return None
+    raw = config.get(key)
+    if raw is None:
+        return None
+    label = f"transports.slack.{key}"
+    if isinstance(raw, list) or isinstance(raw, dict):
+        return _coerce_block_list(raw, label, config_path)
+    if not isinstance(raw, str):
+        raise ConfigError(f"Invalid `{label}` in {config_path}; expected JSON or a list.")
+    text = raw.strip()
+    if not text:
+        return None
+    if text.startswith("@"):
+        path = Path(text[1:]).expanduser()
+        if not path.is_absolute():
+            path = config_path.parent / path
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ConfigError(
+                f"Invalid `{label}` in {config_path}; could not read {path}: {exc}."
+            ) from exc
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"Invalid `{label}` in {config_path}; expected valid JSON."
+        ) from exc
+    return _coerce_block_list(parsed, label, config_path)
+
+
+def _coerce_block_list(
+    value: Any,
+    label: str,
+    config_path: Path,
+) -> list[dict[str, Any]]:
+    blocks = value
+    if isinstance(blocks, dict):
+        blocks = blocks.get("blocks")
+    if not isinstance(blocks, list) or not all(
+        isinstance(item, dict) for item in blocks
+    ):
+        raise ConfigError(
+            f"Invalid `{label}` in {config_path}; expected a list of block objects."
+        )
+    return list(blocks)
 
 
 def _slugify_action_id(value: str) -> str:
@@ -395,7 +437,7 @@ def _slugify_action_id(value: str) -> str:
     cleaned = cleaned.strip("-_")
     if not cleaned or not _ACTION_ID_RE.match(cleaned):
         raise ConfigError(
-            "Invalid `transports.slack.action_buttons.id` value; "
+            "Invalid `transports.slack.action_handlers.id` value; "
             "expected 1-63 chars of [a-z0-9_-], starting with a letter or digit."
         )
     return cleaned

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs
 
 import anyio
@@ -32,7 +33,7 @@ from takopi.runners.run_options import EngineRunOptions
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
 from .commands import dispatch_command, split_command_args
-from .config import SlackActionButton, SlackFilesSettings
+from .config import SlackActionHandler, SlackFilesSettings
 from .engine import run_engine, send_plain
 from .commands.file_transfer import (
     extract_files,
@@ -51,7 +52,9 @@ logger = get_logger(__name__)
 
 MAX_SLACK_TEXT = 3900
 MAX_BLOCK_TEXT = 2800
+CANCEL_ARCHIVE_ACTION_ID = "takopi-slack:archive-cancel"
 ARCHIVE_ACTION_ID = "takopi-slack:archive"
+CONFIRM_ARCHIVE_ACTION_ID = "takopi-slack:archive-confirm"
 CANCEL_ACTION_ID = "takopi-slack:cancel"
 INLINE_COMMAND_RE = re.compile(
     r"(^|\s)(?P<token>/(?P<cmd>[a-z0-9_]{1,32}))",
@@ -136,7 +139,8 @@ class SlackBridgeConfig:
     startup_msg: str
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
-    action_buttons: list[SlackActionButton] = field(default_factory=list)
+    action_handlers: list[SlackActionHandler] = field(default_factory=list)
+    action_blocks: list[dict[str, Any]] | None = None
     thread_store: SlackThreadSessionStore | None = None
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
@@ -156,12 +160,12 @@ class SlackTransport:
         self,
         client: SlackClient,
         *,
-        action_buttons: Sequence[SlackActionButton] | None = None,
+        action_blocks: list[dict[str, Any]] | None = None,
     ) -> None:
         self._client = client
         self._outbox = SlackOutbox()
         self._send_counter = 0
-        self._action_buttons = list(action_buttons or [])
+        self._action_blocks = action_blocks
 
     @staticmethod
     def _extract_followups(message: RenderedMessage) -> list[RenderedMessage]:
@@ -199,7 +203,7 @@ class SlackTransport:
             return _build_archive_blocks(
                 message.text,
                 thread_id=thread_id,
-                action_buttons=self._action_buttons,
+                action_blocks=self._action_blocks,
             )
         if allow_clear and extra.get("clear_blocks"):
             return []
@@ -573,10 +577,9 @@ def _build_archive_blocks(
     text: str,
     *,
     thread_id: str | None,
-    action_buttons: Sequence[SlackActionButton] | None = None,
+    action_blocks: list[dict[str, Any]] | None = None,
     include_actions: bool = True,
 ) -> list[dict[str, Any]]:
-    value = thread_id or ""
     sections = _split_block_text(text)
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
@@ -584,33 +587,39 @@ def _build_archive_blocks(
     ]
     if not include_actions:
         return blocks
-    buttons = list(action_buttons or [])
-    elements: list[dict[str, Any]] = []
-    for button in buttons:
-        element = {
-            "type": "button",
-            "text": {"type": "plain_text", "text": button.label},
-            "action_id": button.action_id,
-            "value": value,
-        }
-        if button.style:
-            element["style"] = button.style
-        elements.append(element)
-    elements.append(
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "archive"},
-            "action_id": ARCHIVE_ACTION_ID,
-            "value": value,
-        }
-    )
-    blocks.append(
+    if action_blocks is not None:
+        blocks.extend(copy.deepcopy(action_blocks))
+        return blocks
+    return blocks
+
+
+def _build_archive_confirm_blocks(
+    text: str,
+    *,
+    thread_id: str | None,
+) -> list[dict[str, Any]]:
+    value = thread_id or ""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
         {
             "type": "actions",
-            "elements": elements,
-        }
-    )
-    return blocks
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "confirm archive"},
+                    "action_id": CONFIRM_ARCHIVE_ACTION_ID,
+                    "style": "danger",
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "cancel"},
+                    "action_id": CANCEL_ARCHIVE_ACTION_ID,
+                    "value": value,
+                },
+            ],
+        },
+    ]
 
 
 def _mention_regex(bot_user_id: str) -> re.Pattern[str]:
@@ -1386,14 +1395,6 @@ async def _handle_slash_command(
         )
         return
 
-    if response_url:
-        await _respond_ephemeral(
-            cfg,
-            response_url=response_url,
-            channel_id=channel_id,
-            text="running...",
-        )
-
     command_context = await _resolve_command_context(
         cfg,
         channel_id=channel_id,
@@ -1438,6 +1439,10 @@ async def _handle_interactive(
 ) -> None:
     payload_type = payload.get("type")
     if payload_type == "block_actions":
+        if await _handle_archive_confirm_action(cfg, payload):
+            return
+        if await _handle_archive_cancel_action(cfg, payload):
+            return
         if await _handle_archive_action(cfg, payload):
             return
         if await _handle_custom_action(cfg, payload, running_tasks):
@@ -1542,7 +1547,7 @@ async def _send_archive_message(
     blocks = _build_archive_blocks(
         text,
         thread_id=thread_id,
-        action_buttons=cfg.action_buttons,
+        action_blocks=cfg.action_blocks,
         include_actions=include_actions,
     )
     await cfg.client.post_message(
@@ -1570,7 +1575,7 @@ async def _clear_archive_actions(
         blocks=_build_archive_blocks(
             text,
             thread_id=thread_id,
-            action_buttons=cfg.action_buttons,
+            action_blocks=cfg.action_blocks,
             include_actions=False,
         ),
     )
@@ -1641,82 +1646,92 @@ async def _handle_archive_action(
             text="missing thread id for archive action.",
         )
         return True
-    message_ts = _extract_action_message_ts(payload)
-    message = payload.get("message")
-    message_text = message.get("text") if isinstance(message, dict) else None
     snapshot = await cfg.thread_store.get_thread_snapshot(
         channel_id=channel_id,
         thread_id=thread_id,
     )
-
-    if snapshot is not None and snapshot.worktree is not None:
-        ok, result = await _delete_worktree_for_snapshot(cfg, snapshot)
-        if ok:
-            await cfg.thread_store.clear_worktree(
-                channel_id=channel_id,
-                thread_id=thread_id,
-            )
-        text = (
-            f"archive: {_format_worktree_ref(snapshot.worktree)} {result}"
-            if ok
-            else f"archive failed for {_format_worktree_ref(snapshot.worktree)}: {result}"
-        )
-        await _send_archive_message(
-            cfg,
-            channel_id=channel_id,
-            thread_id=thread_id,
-            text=text,
-            include_actions=not ok,
-        )
-        await _clear_archive_actions(
-            cfg,
-            channel_id=channel_id,
-            message_ts=message_ts,
-            thread_id=thread_id,
-            text=message_text,
-        )
-        return True
-
     context = await cfg.thread_store.get_context(
         channel_id=channel_id,
         thread_id=thread_id,
     )
-    if context is None or not context.project:
-        await _send_archive_message(
+    if snapshot is not None and snapshot.worktree is not None:
+        label = _format_worktree_ref(snapshot.worktree)
+    elif context is not None and context.project:
+        label = f"`/{context.project}`"
+    else:
+        label = "this thread"
+
+    prompt = (
+        f"Archive {label}? This will delete the worktree and discard uncommitted changes."
+    )
+    await cfg.client.post_message(
+        channel_id=channel_id,
+        text=prompt,
+        blocks=_build_archive_confirm_blocks(prompt, thread_id=thread_id),
+        thread_ts=thread_id,
+    )
+    return True
+
+
+async def _handle_archive_confirm_action(
+    cfg: SlackBridgeConfig,
+    payload: dict[str, Any],
+) -> bool:
+    actions = payload.get("actions")
+    action = _extract_block_action(actions, action_ids={CONFIRM_ARCHIVE_ACTION_ID})
+    if action is None:
+        return False
+    if cfg.thread_store is None:
+        return True
+    channel = payload.get("channel") or {}
+    channel_id = channel.get("id") if isinstance(channel, dict) else None
+    if not isinstance(channel_id, str):
+        return True
+    thread_id = _extract_action_thread_id(payload, action)
+    if thread_id is None:
+        await _respond_ephemeral(
             cfg,
+            response_url=_extract_response_url(payload),
             channel_id=channel_id,
-            thread_id=thread_id,
-            text="archive failed: no project context found for this thread.",
-            include_actions=False,
-        )
-        await _clear_archive_actions(
-            cfg,
-            channel_id=channel_id,
-            message_ts=message_ts,
-            thread_id=thread_id,
-            text=message_text,
+            text="missing thread id for archive confirmation.",
         )
         return True
-
-    ok, result = await _reset_project_to_origin_main(cfg, project=context.project)
-    text = (
-        f"archive: `/{context.project}` {result}"
-        if ok
-        else f"archive failed for `/{context.project}`: {result}"
-    )
-    await _send_archive_message(
+    message_ts = _extract_action_message_ts(payload)
+    await _archive_thread(
         cfg,
         channel_id=channel_id,
         thread_id=thread_id,
-        text=text,
-        include_actions=not ok,
-    )
-    await _clear_archive_actions(
-        cfg,
-        channel_id=channel_id,
         message_ts=message_ts,
-        thread_id=thread_id,
-        text=message_text,
+    )
+    return True
+
+
+async def _handle_archive_cancel_action(
+    cfg: SlackBridgeConfig,
+    payload: dict[str, Any],
+) -> bool:
+    actions = payload.get("actions")
+    action = _extract_block_action(actions, action_ids={CANCEL_ARCHIVE_ACTION_ID})
+    if action is None:
+        return False
+    channel = payload.get("channel") or {}
+    channel_id = channel.get("id") if isinstance(channel, dict) else None
+    if not isinstance(channel_id, str):
+        return True
+    message_ts = _extract_action_message_ts(payload)
+    if not isinstance(message_ts, str):
+        return True
+    text = "archive cancelled."
+    await cfg.client.update_message(
+        channel_id=channel_id,
+        ts=message_ts,
+        text=text,
+        blocks=_build_archive_blocks(
+            text,
+            thread_id=_extract_payload_thread_id(payload),
+            action_blocks=cfg.action_blocks,
+            include_actions=False,
+        ),
     )
     return True
 
@@ -1726,9 +1741,11 @@ async def _handle_custom_action(
     payload: dict[str, Any],
     running_tasks: RunningTasks,
 ) -> bool:
-    if not cfg.action_buttons:
+    action_map: dict[str, tuple[str, str]] = {}
+    for handler in cfg.action_handlers:
+        action_map[handler.action_id] = (handler.command, handler.args)
+    if not action_map:
         return False
-    action_map = {button.action_id: button for button in cfg.action_buttons}
     action = _extract_block_action(
         payload.get("actions"),
         action_ids=set(action_map),
@@ -1744,9 +1761,10 @@ async def _handle_custom_action(
     action_id = action.get("action_id")
     if not isinstance(action_id, str):
         return True
-    button = action_map.get(action_id)
-    if button is None:
+    action_entry = action_map.get(action_id)
+    if action_entry is None:
         return True
+    command_id, args_text = action_entry
 
     thread_ts = _extract_action_thread_id(payload, action)
     if thread_ts is None:
@@ -1761,16 +1779,6 @@ async def _handle_custom_action(
         return True
 
     response_url = payload.get("response_url")
-    if isinstance(response_url, str) and response_url:
-        await _respond_ephemeral(
-            cfg,
-            response_url=response_url,
-            channel_id=channel_id,
-            text="running...",
-            replace_original=False,
-            delete_original=False,
-        )
-
     message = payload.get("message") or {}
     message_text = message.get("text") if isinstance(message, dict) else None
     message_ts = _extract_action_message_ts(payload)
@@ -1785,11 +1793,10 @@ async def _handle_custom_action(
         if isinstance(message_text, str):
             reply_text = message_text
 
-    args_text = button.args
-    full_text = f"/{button.command} {args_text}".strip()
+    full_text = f"/{command_id} {args_text}".strip()
     handled = await dispatch_command(
         cfg,
-        command_id=button.command,
+        command_id=command_id,
         args_text=args_text,
         full_text=full_text,
         channel_id=channel_id,
@@ -1808,14 +1815,109 @@ async def _handle_custom_action(
             cfg,
             response_url=response_url if isinstance(response_url, str) else None,
             channel_id=channel_id,
-            text=f"unknown command `{button.command}`.",
+            text=f"unknown command `{command_id}`.",
         )
     return True
+
+
+async def _archive_thread(
+    cfg: SlackBridgeConfig,
+    *,
+    channel_id: str,
+    thread_id: str,
+    message_ts: str | None,
+) -> None:
+    snapshot = await cfg.thread_store.get_thread_snapshot(
+        channel_id=channel_id,
+        thread_id=thread_id,
+    )
+    if snapshot is not None and snapshot.worktree is not None:
+        ok, result = await _delete_worktree_for_snapshot(
+            cfg, snapshot, force_cleanup=True
+        )
+        if ok:
+            await cfg.thread_store.clear_worktree(
+                channel_id=channel_id,
+                thread_id=thread_id,
+            )
+        text = (
+            f"archive: {_format_worktree_ref(snapshot.worktree)} {result}"
+            if ok
+            else f"archive failed for {_format_worktree_ref(snapshot.worktree)}: {result}"
+        )
+        await _finalize_archive_message(
+            cfg,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            message_ts=message_ts,
+            text=text,
+        )
+        return
+
+    context = await cfg.thread_store.get_context(
+        channel_id=channel_id,
+        thread_id=thread_id,
+    )
+    if context is None or not context.project:
+        await _finalize_archive_message(
+            cfg,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            message_ts=message_ts,
+            text="archive failed: no project context found for this thread.",
+        )
+        return
+
+    ok, result = await _reset_project_to_origin_main(cfg, project=context.project)
+    text = (
+        f"archive: `/{context.project}` {result}"
+        if ok
+        else f"archive failed for `/{context.project}`: {result}"
+    )
+    await _finalize_archive_message(
+        cfg,
+        channel_id=channel_id,
+        thread_id=thread_id,
+        message_ts=message_ts,
+        text=text,
+    )
+
+
+async def _finalize_archive_message(
+    cfg: SlackBridgeConfig,
+    *,
+    channel_id: str,
+    thread_id: str,
+    message_ts: str | None,
+    text: str,
+) -> None:
+    blocks = _build_archive_blocks(
+        text,
+        thread_id=thread_id,
+        action_blocks=cfg.action_blocks,
+        include_actions=False,
+    )
+    if isinstance(message_ts, str):
+        await cfg.client.update_message(
+            channel_id=channel_id,
+            ts=message_ts,
+            text=text,
+            blocks=blocks,
+        )
+        return
+    await cfg.client.post_message(
+        channel_id=channel_id,
+        text=text,
+        blocks=blocks,
+        thread_ts=thread_id,
+    )
 
 
 async def _delete_worktree_for_snapshot(
     cfg: SlackBridgeConfig,
     snapshot: ThreadSnapshot,
+    *,
+    force_cleanup: bool,
 ) -> tuple[bool, str]:
     worktree = snapshot.worktree
     if worktree is None:
@@ -1864,7 +1966,22 @@ async def _delete_worktree_for_snapshot(
         details = stderr.strip() or stdout.strip()
         return False, f"could not check worktree status: {details}"
     if stdout.strip():
-        return False, "worktree has uncommitted changes; clean it before deleting."
+        if not force_cleanup:
+            return False, "worktree has uncommitted changes; clean it before deleting."
+        code, stdout, stderr = await _run_git(
+            ["git", "-C", str(path), "reset", "--hard", "HEAD"],
+            cwd=path,
+        )
+        if code != 0:
+            details = stderr.strip() or stdout.strip()
+            return False, f"git reset failed: {details}"
+        code, stdout, stderr = await _run_git(
+            ["git", "-C", str(path), "clean", "-fd"],
+            cwd=path,
+        )
+        if code != 0:
+            details = stderr.strip() or stdout.strip()
+            return False, f"git clean failed: {details}"
 
     code, stdout, stderr = await _run_git(
         ["git", "-C", str(path), "worktree", "remove", str(path)],
@@ -1874,6 +1991,8 @@ async def _delete_worktree_for_snapshot(
         details = stderr.strip() or stdout.strip()
         return False, f"git worktree remove failed: {details}"
 
+    if force_cleanup:
+        return True, "worktree deleted (local changes discarded)."
     return True, "worktree deleted."
 
 
@@ -1925,7 +2044,7 @@ async def _handle_cancel_action(
         blocks=_build_archive_blocks(
             text,
             thread_id=thread_id,
-            action_buttons=cfg.action_buttons,
+            action_blocks=cfg.action_blocks,
             include_actions=True,
         ),
     )
@@ -1961,14 +2080,6 @@ async def _handle_shortcut(
     if not command_id:
         return
     args_text = message_text.strip()
-
-    if response_url:
-        await _respond_ephemeral(
-            cfg,
-            response_url=response_url,
-            channel_id=channel_id,
-            text="running...",
-        )
 
     thread_id = _session_thread_id(channel_id, thread_ts)
     command_context = await _resolve_command_context(
@@ -2140,7 +2251,7 @@ async def _send_stale_worktree_reminder(
     blocks = _build_archive_blocks(
         text,
         thread_id=snapshot.thread_id,
-        action_buttons=cfg.action_buttons,
+        action_blocks=cfg.action_blocks,
     )
     message = RenderedMessage(text=text)
     message.extra["blocks"] = blocks

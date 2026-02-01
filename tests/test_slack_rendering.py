@@ -1,5 +1,4 @@
 from takopi_slack_plugin.bridge import (
-    ARCHIVE_ACTION_ID,
     MAX_BLOCK_TEXT,
     SlackPresenter,
     _build_archive_blocks,
@@ -10,9 +9,6 @@ from takopi_slack_plugin.bridge import (
     _trim_block_text,
     _trim_text,
 )
-from takopi_slack_plugin.config import SlackActionButton
-
-
 class _State:
     def __init__(self, *, engine: str) -> None:
         self.engine = engine
@@ -54,29 +50,29 @@ def test_build_archive_blocks_splits_long_text() -> None:
     blocks = _build_archive_blocks(text, thread_id="123")
     sections = [block for block in blocks if block["type"] == "section"]
     assert "".join(block["text"]["text"] for block in sections) == text
-    assert blocks[-1]["type"] == "actions"
+    assert all(block["type"] == "section" for block in blocks)
 
 
-def test_build_archive_blocks_includes_custom_actions() -> None:
-    buttons = [
-        SlackActionButton(
-            id="preview",
-            label="preview",
-            command="preview",
-            args="start",
-            style="primary",
-        )
+def test_build_archive_blocks_uses_action_blocks() -> None:
+    custom = [
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "go"},
+                    "action_id": "takopi-slack:action:go",
+                }
+            ],
+        }
     ]
     blocks = _build_archive_blocks(
         "hello",
         thread_id="123",
-        action_buttons=buttons,
+        action_blocks=custom,
     )
-    actions = blocks[-1]
-    elements = actions["elements"]
-    assert elements[0]["action_id"] == buttons[0].action_id
-    assert elements[0]["style"] == "primary"
-    assert elements[-1]["action_id"] == ARCHIVE_ACTION_ID
+    assert blocks[-1]["type"] == "actions"
+    assert blocks[-1]["elements"][0]["action_id"] == "takopi-slack:action:go"
 
 
 def test_presenter_split_followups() -> None:

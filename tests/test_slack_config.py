@@ -12,15 +12,14 @@ def test_from_config_valid() -> None:
         "channel_id": "C123",
         "app_token": "xapp-1",
         "message_overflow": "split",
-        "action_buttons": [
+        "action_handlers": [
             {
-                "id": "preview",
-                "label": "Preview",
-                "command": "takopi-preview",
+                "action_id": "takopi-slack:action:deploy",
+                "command": "preview",
                 "args": "start",
-                "style": "primary",
             }
         ],
+        "action_blocks": '[{"type":"section","text":{"type":"mrkdwn","text":"hi"}}]',
         "files": {
             "enabled": True,
             "auto_put": False,
@@ -38,10 +37,11 @@ def test_from_config_valid() -> None:
     assert settings.files.auto_put is False
     assert settings.files.auto_put_mode == "prompt"
     assert settings.files.allowed_user_ids == ["U123"]
-    assert settings.action_buttons[0].label == "Preview"
-    assert settings.action_buttons[0].command == "preview"
-    assert settings.action_buttons[0].args == "start"
-    assert settings.action_buttons[0].style == "primary"
+    assert settings.action_handlers[0].action_id == "takopi-slack:action:deploy"
+    assert settings.action_handlers[0].command == "preview"
+    assert settings.action_blocks == [
+        {"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}
+    ]
 
 
 def test_from_config_missing_key() -> None:
@@ -77,6 +77,28 @@ def test_from_config_invalid_files_table() -> None:
         SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
 
 
+def test_from_config_rejects_action_buttons() -> None:
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "action_buttons": [{"id": "preview", "command": "preview"}],
+    }
+    with pytest.raises(ConfigError):
+        SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
+
+
+def test_from_config_rejects_show_running() -> None:
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "show_running": False,
+    }
+    with pytest.raises(ConfigError):
+        SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
+
+
 def test_from_config_invalid_uploads_dir() -> None:
     cfg = {
         "bot_token": "xoxb-1",
@@ -99,16 +121,44 @@ def test_from_config_unknown_files_key() -> None:
         SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
 
 
-def test_from_config_duplicate_action_buttons() -> None:
+def test_from_config_duplicate_action_handlers() -> None:
     cfg = {
         "bot_token": "xoxb-1",
         "channel_id": "C123",
         "app_token": "xapp-1",
-        "action_buttons": [
-            {"id": "preview", "command": "preview"},
-            {"id": "preview", "command": "status"},
+        "action_handlers": [
+            {"action_id": "takopi-slack:action:preview", "command": "preview"},
+            {"action_id": "takopi-slack:action:preview", "command": "status"},
         ],
     }
     with pytest.raises(ConfigError):
         SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
 
+
+def test_from_config_action_blocks_file(tmp_path: Path) -> None:
+    blocks_path = tmp_path / "blocks.json"
+    blocks_path.write_text(
+        '[{"type":"section","text":{"type":"plain_text","text":"ok"}}]',
+        encoding="utf-8",
+    )
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "action_blocks": f"@{blocks_path}",
+    }
+    settings = SlackTransportSettings.from_config(cfg, config_path=blocks_path)
+    assert settings.action_blocks == [
+        {"type": "section", "text": {"type": "plain_text", "text": "ok"}}
+    ]
+
+
+def test_from_config_invalid_action_blocks() -> None:
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "action_blocks": '{"blocks": "nope"}',
+    }
+    with pytest.raises(ConfigError):
+        SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))

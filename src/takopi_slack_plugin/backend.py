@@ -129,7 +129,7 @@ class SlackBackend(TransportBackend):
         client = SlackClient(settings.bot_token)
         transport = SlackTransport(
             client,
-            action_buttons=settings.action_buttons,
+            action_blocks=settings.action_blocks,
         )
         presenter = SlackPresenter(message_overflow=settings.message_overflow)
         exec_cfg = ExecBridgeConfig(
@@ -148,7 +148,8 @@ class SlackBackend(TransportBackend):
             startup_msg=startup_msg,
             exec_cfg=exec_cfg,
             files=settings.files,
-            action_buttons=settings.action_buttons,
+            action_handlers=settings.action_handlers,
+            action_blocks=settings.action_blocks,
             thread_store=thread_store,
             stale_worktree_reminder=settings.stale_worktree_reminder,
             stale_worktree_hours=settings.stale_worktree_hours,
