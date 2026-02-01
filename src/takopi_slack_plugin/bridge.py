@@ -990,12 +990,16 @@ async def _respond_ephemeral(
     response_url: str | None,
     channel_id: str,
     text: str,
+    replace_original: bool | None = None,
+    delete_original: bool | None = None,
 ) -> None:
     if response_url:
         await cfg.client.post_response(
             response_url=response_url,
             text=text,
             response_type="ephemeral",
+            replace_original=replace_original,
+            delete_original=delete_original,
         )
         return
     await cfg.client.post_message(channel_id=channel_id, text=text)
@@ -1763,6 +1767,8 @@ async def _handle_custom_action(
             response_url=response_url,
             channel_id=channel_id,
             text="running...",
+            replace_original=False,
+            delete_original=False,
         )
 
     message = payload.get("message") or {}
