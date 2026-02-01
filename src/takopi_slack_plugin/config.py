@@ -20,7 +20,6 @@ _ACTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 @dataclass(frozen=True, slots=True)
-@dataclass(frozen=True, slots=True)
 class SlackActionHandler:
     action_id: str
     command: str
@@ -388,9 +387,7 @@ def _optional_action_blocks(
     if raw is None:
         return None
     label = f"transports.slack.{key}"
-    if isinstance(raw, list):
-        return _coerce_block_list(raw, label, config_path)
-    if isinstance(raw, dict):
+    if isinstance(raw, list) or isinstance(raw, dict):
         return _coerce_block_list(raw, label, config_path)
     if not isinstance(raw, str):
         raise ConfigError(f"Invalid `{label}` in {config_path}; expected JSON or a list.")
@@ -431,6 +428,7 @@ def _coerce_block_list(
             f"Invalid `{label}` in {config_path}; expected a list of block objects."
         )
     return list(blocks)
+
 
 def _slugify_action_id(value: str) -> str:
     cleaned = value.strip().lower()
