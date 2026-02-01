@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
@@ -170,10 +171,8 @@ class SlackCommandExecutor(CommandExecutor):
         )
         return RunResult(engine=engine, message=None)
 
-    def run_background(self, _request: RunRequest) -> None:
-        raise RuntimeError(
-            "Background runs are disabled in the Slack transport; use run_one()."
-        )
+    def run_background(self, request: RunRequest) -> asyncio.Task[RunResult]:
+        return asyncio.create_task(self.run_one(request))
 
     async def run_many(
         self,
