@@ -8,6 +8,7 @@ stores per-thread context + resume tokens.
 - socket mode only; listens in a single channel or dm
 - thread sessions (context + resume tokens) stored at
   `~/.takopi/slack_thread_sessions_state.json`
+- optional voice clip transcription (treats audio file shares as prompts)
 - slash commands + message shortcuts for overrides and plugin commands
 - cancel button on progress messages
 - archive button on responses (deletes worktree or resets to origin/main)
@@ -62,6 +63,9 @@ bot_token = "xoxb-..."
 app_token = "xapp-..."
 channel_id = "C12345678"
 message_overflow = "split"
+voice_transcription = false
+voice_max_bytes = 10485760
+voice_transcription_model = "gpt-4o-mini-transcribe"
 stale_worktree_reminder = true
 stale_worktree_hours = 24
 stale_worktree_check_interval_s = 600

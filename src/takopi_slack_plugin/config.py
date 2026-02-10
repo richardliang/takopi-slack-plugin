@@ -125,6 +125,11 @@ class SlackTransportSettings:
     channel_id: str
     app_token: str
     message_overflow: Literal["trim", "split"] = "split"
+    voice_transcription: bool = False
+    voice_max_bytes: int = 10 * 1024 * 1024
+    voice_transcription_model: str = "gpt-4o-mini-transcribe"
+    voice_transcription_base_url: str | None = None
+    voice_transcription_api_key: str | None = None
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
     action_handlers: list[SlackActionHandler] = field(default_factory=list)
     action_blocks: list[dict[str, Any]] | None = None
@@ -175,6 +180,47 @@ class SlackTransportSettings:
             config.get("files"), config_path=config_path
         )
 
+        voice_transcription = _optional_bool(
+            config,
+            "voice_transcription",
+            False,
+            config_path,
+        )
+        voice_max_bytes = _optional_int(
+            config,
+            "voice_max_bytes",
+            10 * 1024 * 1024,
+            config_path,
+            label="transports.slack.voice_max_bytes",
+            min_value=0,
+        )
+        voice_transcription_model = config.get(
+            "voice_transcription_model", "gpt-4o-mini-transcribe"
+        )
+        if (
+            not isinstance(voice_transcription_model, str)
+            or not voice_transcription_model.strip()
+        ):
+            raise ConfigError(
+                f"Invalid `transports.slack.voice_transcription_model` in {config_path}; "
+                "expected a non-empty string."
+            )
+        voice_transcription_model = voice_transcription_model.strip()
+        voice_transcription_base_url = _optional_str(
+            config,
+            "voice_transcription_base_url",
+            None,
+            config_path,
+            label="transports.slack.voice_transcription_base_url",
+        )
+        voice_transcription_api_key = _optional_str(
+            config,
+            "voice_transcription_api_key",
+            None,
+            config_path,
+            label="transports.slack.voice_transcription_api_key",
+        )
+
         action_handlers = _optional_action_handlers(
             config,
             "action_handlers",
@@ -213,6 +259,11 @@ class SlackTransportSettings:
             channel_id=channel_id,
             app_token=app_token,
             message_overflow=message_overflow,
+            voice_transcription=voice_transcription,
+            voice_max_bytes=voice_max_bytes,
+            voice_transcription_model=voice_transcription_model,
+            voice_transcription_base_url=voice_transcription_base_url,
+            voice_transcription_api_key=voice_transcription_api_key,
             files=files,
             action_handlers=action_handlers,
             action_blocks=action_blocks,
@@ -250,6 +301,30 @@ def _optional_str(
         raise ConfigError(f"Invalid `{name}` in {config_path}; expected a string.")
     cleaned = value.strip()
     return cleaned or None
+
+
+def _optional_int(
+    config: dict[str, Any],
+    key: str,
+    default: int,
+    config_path: Path,
+    *,
+    label: str | None = None,
+    min_value: int | None = None,
+) -> int:
+    if key not in config:
+        value = default
+    else:
+        value = config.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        name = label or f"transports.slack.{key}"
+        raise ConfigError(f"Invalid `{name}` in {config_path}; expected an integer.")
+    if min_value is not None and value < min_value:
+        name = label or f"transports.slack.{key}"
+        raise ConfigError(
+            f"Invalid `{name}` in {config_path}; expected >= {min_value}."
+        )
+    return value
 
 
 def _optional_bool(
