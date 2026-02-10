@@ -40,6 +40,7 @@ from .commands.file_transfer import (
     handle_file_command,
     handle_file_uploads,
 )
+from .commands.reply import make_reply
 from .outbox import DELETE_PRIORITY, EDIT_PRIORITY, SEND_PRIORITY, OutboxOp, SlackOutbox
 from .overrides import REASONING_LEVELS, is_valid_reasoning_level, supports_reasoning
 from .thread_sessions import (
@@ -47,6 +48,7 @@ from .thread_sessions import (
     ThreadSnapshot,
     WorktreeSnapshot,
 )
+from .voice import find_voice_file, transcribe_voice
 
 logger = get_logger(__name__)
 
@@ -139,6 +141,11 @@ class SlackBridgeConfig:
     startup_msg: str
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
+    voice_transcription: bool = False
+    voice_max_bytes: int = 10 * 1024 * 1024
+    voice_transcription_model: str = "gpt-4o-mini-transcribe"
+    voice_transcription_base_url: str | None = None
+    voice_transcription_api_key: str | None = None
     action_handlers: list[SlackActionHandler] = field(default_factory=list)
     action_blocks: list[dict[str, Any]] | None = None
     thread_store: SlackThreadSessionStore | None = None
@@ -954,6 +961,25 @@ async def _resolve_prompt_from_media(
                 ambient_context=context,
             )
             return None
+
+    voice_file = find_voice_file(files)
+    if voice_file is not None:
+        reply = make_reply(
+            cfg,
+            channel_id=channel_id,
+            message_ts=message.ts,
+            thread_ts=thread_id,
+        )
+        return await transcribe_voice(
+            client=cfg.client,
+            file=voice_file,
+            enabled=cfg.voice_transcription,
+            model=cfg.voice_transcription_model,
+            max_bytes=cfg.voice_max_bytes,
+            reply=reply,
+            base_url=cfg.voice_transcription_base_url,
+            api_key=cfg.voice_transcription_api_key,
+        )
 
     if files:
         prompt = await handle_file_uploads(
