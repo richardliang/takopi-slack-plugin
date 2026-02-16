@@ -61,6 +61,7 @@ transport = "slack"
 bot_token = "xoxb-..."
 app_token = "xapp-..."
 channel_id = "C12345678"
+allowed_user_ids = ["U12345678"]
 message_overflow = "split"
 stale_worktree_reminder = true
 stale_worktree_hours = 24
@@ -98,9 +99,16 @@ uploads_dir = "incoming"
 
 set `message_overflow = "trim"` if you prefer truncation instead of followups.
 
+`allowed_user_ids` restricts all interactions (messages, slash commands, buttons,
+and shortcuts) to the listed Slack user IDs. Leave it empty to allow all users
+in the configured channel.
+
 `action_handlers` maps arbitrary Block Kit `action_id` values to Takopi
 commands. Use `action_id` for full control, or `id` to generate
 `takopi-slack:action:<id>`. There is no built-in limit.
+
+`transports.slack.files.allowed_user_ids` can still be used for a stricter
+file-command allowlist if needed.
 
 `action_blocks` lets you provide raw Block Kit JSON (as a JSON string, or
 `@/path/to/blocks.json`) to render alongside the message text instead of the

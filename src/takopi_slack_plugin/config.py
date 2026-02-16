@@ -124,6 +124,7 @@ class SlackTransportSettings:
     bot_token: str
     channel_id: str
     app_token: str
+    allowed_user_ids: list[str] = field(default_factory=list)
     message_overflow: Literal["trim", "split"] = "split"
     files: SlackFilesSettings = field(default_factory=SlackFilesSettings)
     action_handlers: list[SlackActionHandler] = field(default_factory=list)
@@ -157,6 +158,13 @@ class SlackTransportSettings:
         bot_token = _require_str(config, "bot_token", config_path=config_path)
         channel_id = _require_str(config, "channel_id", config_path=config_path)
         app_token = _require_str(config, "app_token", config_path=config_path)
+        allowed_user_ids = _optional_str_list(
+            config,
+            "allowed_user_ids",
+            [],
+            config_path,
+            label="transports.slack.allowed_user_ids",
+        )
 
         message_overflow = config.get("message_overflow", "split")
         if not isinstance(message_overflow, str):
@@ -212,6 +220,7 @@ class SlackTransportSettings:
             bot_token=bot_token,
             channel_id=channel_id,
             app_token=app_token,
+            allowed_user_ids=allowed_user_ids,
             message_overflow=message_overflow,
             files=files,
             action_handlers=action_handlers,

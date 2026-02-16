@@ -11,6 +11,7 @@ def test_from_config_valid() -> None:
         "bot_token": "xoxb-1",
         "channel_id": "C123",
         "app_token": "xapp-1",
+        "allowed_user_ids": ["U999"],
         "message_overflow": "split",
         "action_handlers": [
             {
@@ -32,6 +33,7 @@ def test_from_config_valid() -> None:
     assert settings.bot_token == "xoxb-1"
     assert settings.channel_id == "C123"
     assert settings.app_token == "xapp-1"
+    assert settings.allowed_user_ids == ["U999"]
     assert settings.message_overflow == "split"
     assert settings.files.enabled is True
     assert settings.files.auto_put is False
@@ -61,6 +63,17 @@ def test_from_config_invalid_message_overflow() -> None:
         "channel_id": "C123",
         "app_token": "xapp-1",
         "message_overflow": "bad",
+    }
+    with pytest.raises(ConfigError):
+        SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))
+
+
+def test_from_config_invalid_allowed_user_ids() -> None:
+    cfg = {
+        "bot_token": "xoxb-1",
+        "channel_id": "C123",
+        "app_token": "xapp-1",
+        "allowed_user_ids": "U1",
     }
     with pytest.raises(ConfigError):
         SlackTransportSettings.from_config(cfg, config_path=Path("/tmp/x"))

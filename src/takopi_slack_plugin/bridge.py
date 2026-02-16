@@ -139,6 +139,7 @@ class SlackBridgeConfig:
     startup_msg: str
     exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
+    allowed_user_ids: list[str] = field(default_factory=list)
     action_handlers: list[SlackActionHandler] = field(default_factory=list)
     action_blocks: list[dict[str, Any]] | None = None
     thread_store: SlackThreadSessionStore | None = None
@@ -1064,6 +1065,30 @@ def _extract_slash_payload_command(command: object) -> str | None:
     return None
 
 
+def _extract_payload_user_id(payload: dict[str, Any]) -> str | None:
+    user = payload.get("user")
+    if isinstance(user, dict):
+        user_id = user.get("id")
+        if isinstance(user_id, str):
+            cleaned = user_id.strip()
+            if cleaned:
+                return cleaned
+    user_id = payload.get("user_id")
+    if isinstance(user_id, str):
+        cleaned = user_id.strip()
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _is_allowed_user(allowed_user_ids: list[str], user_id: str | None) -> bool:
+    if not allowed_user_ids:
+        return True
+    if user_id is None:
+        return False
+    return user_id in allowed_user_ids
+
+
 def _parse_thread_ts(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value
@@ -1166,6 +1191,17 @@ async def _handle_slash_command(
     if not isinstance(text, str):
         text = ""
     response_url = payload.get("response_url")
+    user_id = payload.get("user_id")
+    if not isinstance(user_id, str):
+        user_id = None
+    if not _is_allowed_user(cfg.allowed_user_ids, user_id):
+        await _respond_ephemeral(
+            cfg,
+            response_url=response_url if isinstance(response_url, str) else None,
+            channel_id=channel_id,
+            text="you are not allowed to use this Takopi bot.",
+        )
+        return
     thread_ts = _parse_thread_ts(payload.get("thread_ts") or payload.get("message_ts"))
     thread_id = _session_thread_id(channel_id, thread_ts)
 
@@ -1438,6 +1474,18 @@ async def _handle_interactive(
     running_tasks: RunningTasks,
 ) -> None:
     payload_type = payload.get("type")
+    actor_user_id = _extract_payload_user_id(payload)
+    if payload_type in {"block_actions", "message_action", "shortcut"} and not _is_allowed_user(
+        cfg.allowed_user_ids, actor_user_id
+    ):
+        response_url = _extract_response_url(payload)
+        if response_url:
+            await cfg.client.post_response(
+                response_url=response_url,
+                text="you are not allowed to use this Takopi bot.",
+                response_type="ephemeral",
+            )
+        return
     if payload_type == "block_actions":
         if await _handle_archive_confirm_action(cfg, payload):
             return
@@ -2403,6 +2451,8 @@ async def _run_socket_loop(
                             continue
 
                         msg = SlackMessage.from_api(event)
+                        if not _is_allowed_user(cfg.allowed_user_ids, msg.user):
+                            continue
                         if _should_skip_message(msg, bot_user_id):
                             continue
                         cleaned = _strip_bot_mention(
