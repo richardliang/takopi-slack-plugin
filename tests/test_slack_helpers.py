@@ -7,8 +7,10 @@ from takopi_slack_plugin.bridge import (
     _coerce_socket_payload,
     _extract_command_text,
     _extract_inline_command,
+    _extract_payload_user_id,
     _extract_slash_payload_command,
     _format_context_directive,
+    _is_allowed_user,
     _parse_thread_ts,
     _should_skip_message,
     _strip_bot_mention,
@@ -48,6 +50,20 @@ def test_extract_slash_payload_command() -> None:
     assert _extract_slash_payload_command("/takopi-status") == "status"
     assert _extract_slash_payload_command("/takopi_status") == "status"
     assert _extract_slash_payload_command("/status") is None
+
+
+def test_extract_payload_user_id() -> None:
+    assert _extract_payload_user_id({"user_id": "U123"}) == "U123"
+    assert _extract_payload_user_id({"user": {"id": "U456"}}) == "U456"
+    assert _extract_payload_user_id({"user": {"id": " "}}) is None
+    assert _extract_payload_user_id({}) is None
+
+
+def test_is_allowed_user() -> None:
+    assert _is_allowed_user([], "U123")
+    assert _is_allowed_user(["U123"], "U123")
+    assert not _is_allowed_user(["U123"], "U999")
+    assert not _is_allowed_user(["U123"], None)
 
 
 def test_format_context_directive() -> None:
