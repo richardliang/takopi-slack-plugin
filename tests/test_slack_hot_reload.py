@@ -9,16 +9,10 @@ from typing import Any
 import anyio
 import pytest
 
-from takopi.runner_bridge import ExecBridgeConfig
 from takopi_slack_plugin import bridge
 from takopi_slack_plugin.bridge import (
     CommandContext,
-    ReloadableSlackPresenter,
-    ReloadableSlackState,
-    ReloadableSlackTransport,
     SlackBridgeConfig,
-    SlackPresenter,
-    SlackTransport,
     build_startup_message,
 )
 from takopi_slack_plugin.client import SlackAuth, SlackMessage
@@ -48,9 +42,6 @@ class _FakeSlackClient:
         self.delete_calls: list[dict[str, Any]] = []
         self.response_calls: list[dict[str, Any]] = []
         self.close_calls = 0
-
-    def set_token(self, token: str) -> None:
-        self.token = token
 
     async def auth_test(self) -> SlackAuth:
         self.auth_calls.append(self.token)
@@ -289,37 +280,13 @@ def _build_cfg(
     )
     runtime = _FakeRuntime(config_path=config_path, watch_config=True)
     startup_msg = build_startup_message(runtime, startup_pwd=str(tmp_path))
-    client = _FakeSlackClient(settings.bot_token)
-    transport = SlackTransport(
-        client,
-        action_blocks=settings.action_blocks,
-    )
-    transport._outbox = _ImmediateOutbox()
-    state = ReloadableSlackState(
+    state, exec_cfg = bridge.create_reloadable_slack_state(
+        settings,
         startup_pwd=str(tmp_path),
-        client=client,
-        transport=transport,
-        presenter=SlackPresenter(message_overflow=settings.message_overflow),
-        bot_token=settings.bot_token,
-        app_token=settings.app_token,
-        allowed_user_ids=list(settings.allowed_user_ids),
-        allowed_channel_ids=list(settings.allowed_channel_ids),
-        plugin_channels=dict(settings.plugin_channels),
-        reply_mode=settings.reply_mode,
-        message_overflow=settings.message_overflow,
         startup_msg=startup_msg,
-        files=settings.files,
-        action_handlers=list(settings.action_handlers),
-        action_blocks=settings.action_blocks,
-        stale_worktree_reminder=settings.stale_worktree_reminder,
-        stale_worktree_hours=settings.stale_worktree_hours,
-        stale_worktree_check_interval_s=settings.stale_worktree_check_interval_s,
-    )
-    exec_cfg = ExecBridgeConfig(
-        transport=ReloadableSlackTransport(state),
-        presenter=ReloadableSlackPresenter(state),
         final_notify=False,
     )
+    state.transport._outbox = _ImmediateOutbox()
     cfg = SlackBridgeConfig(
         runtime=runtime,
         channel_id=settings.channel_id,

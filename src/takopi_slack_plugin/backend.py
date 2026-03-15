@@ -153,7 +153,6 @@ class SlackBackend(TransportBackend):
                 watch_config=runtime.watch_config,
                 default_engine_override=default_engine_override,
                 transport_id=self.id,
-                transport_config=settings,
             )
 
         anyio.run(run_loop)

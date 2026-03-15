@@ -2977,9 +2977,7 @@ async def run_main_loop(
     watch_config: bool | None = None,
     default_engine_override: str | None = None,
     transport_id: str | None = None,
-    transport_config: object | None = None,
 ) -> None:
-    _ = transport_config
     await _send_startup(cfg)
     config_path = cfg.runtime.config_path
     async with anyio.create_task_group() as tg:
