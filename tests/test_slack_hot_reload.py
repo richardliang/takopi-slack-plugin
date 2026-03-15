@@ -29,7 +29,8 @@ class _ImmediateOutbox:
         _ = key
         return None
 
-    async def close(self) -> None:
+    async def close(self, *, drain: bool = False) -> None:
+        _ = drain
         return None
 
 
@@ -564,3 +565,67 @@ async def test_app_token_reload_reconnects_socket_without_restart(
 
         watch.stop()
         tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_bot_token_reload_rebuilds_transport_and_closes_old_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, runtime, config_path = _build_cfg(
+        tmp_path,
+        monkeypatch=monkeypatch,
+        transport_cfg=_transport_cfg(bot_token="xoxb-1"),
+    )
+    initial_client = cfg.state.client
+    initial_outbox = cfg.state.transport._outbox
+    settings = SlackTransportSettings.from_config(
+        _transport_cfg(bot_token="xoxb-2"),
+        config_path=config_path,
+    )
+
+    await bridge.reload_slack_settings(cfg.state, settings, runtime)
+
+    assert cfg.state.client is not initial_client
+    assert cfg.state.client.token == "xoxb-2"
+    assert cfg.state.transport._outbox is not initial_outbox
+    assert initial_client.close_calls == 1
+
+
+@pytest.mark.anyio
+async def test_action_block_reload_rebuilds_transport_without_closing_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, runtime, config_path = _build_cfg(
+        tmp_path,
+        monkeypatch=monkeypatch,
+        transport_cfg=_transport_cfg(),
+    )
+    initial_client = cfg.state.client
+    initial_outbox = cfg.state.transport._outbox
+    settings = SlackTransportSettings.from_config(
+        _transport_cfg(
+            action_blocks="""
+[
+  {
+    "type": "actions",
+    "elements": [
+      {
+        "type": "button",
+        "text": { "type": "plain_text", "text": "Archive" },
+        "action_id": "takopi-slack:archive"
+      }
+    ]
+  }
+]
+"""
+        ),
+        config_path=config_path,
+    )
+
+    await bridge.reload_slack_settings(cfg.state, settings, runtime)
+
+    assert cfg.state.client is initial_client
+    assert cfg.state.transport._outbox is not initial_outbox
+    assert initial_client.close_calls == 0

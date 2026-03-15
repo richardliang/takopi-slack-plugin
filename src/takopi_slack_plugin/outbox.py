@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -59,15 +60,14 @@ class SlackOutbox:
         self._cond = anyio.Condition()
         self._start_lock = anyio.Lock()
         self._closed = False
-        self._tg: anyio.abc.TaskGroup | None = None
+        self._worker_task: asyncio.Task[None] | None = None
         self._next_at = 0.0
 
     async def ensure_worker(self) -> None:
         async with self._start_lock:
-            if self._tg is not None or self._closed:
+            if self._worker_task is not None or self._closed:
                 return
-            self._tg = await anyio.create_task_group().__aenter__()
-            self._tg.start_soon(self._run)
+            self._worker_task = asyncio.create_task(self._run())
 
     async def enqueue(self, *, key: object, op: OutboxOp, wait: bool = True) -> Any:
         await self.ensure_worker()
@@ -93,14 +93,15 @@ class SlackOutbox:
                 pending.set_result(None)
             self._cond.notify()
 
-    async def close(self) -> None:
+    async def close(self, *, drain: bool = False) -> None:
         async with self._cond:
             self._closed = True
-            self._fail_pending()
+            if not drain:
+                self._fail_pending()
             self._cond.notify_all()
-        if self._tg is not None:
-            await self._tg.__aexit__(None, None, None)
-            self._tg = None
+        if self._worker_task is not None:
+            await self._worker_task
+            self._worker_task = None
 
     def _fail_pending(self) -> None:
         for pending in list(self._pending.values()):
