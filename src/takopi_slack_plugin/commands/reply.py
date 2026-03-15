@@ -18,7 +18,8 @@ def make_reply(
     message_ts: str | None,
     thread_ts: str | None,
 ) -> Callable[..., Awaitable[None]]:
-    reply_mode = getattr(cfg, "reply_mode", "thread")
+    state = getattr(cfg, "state", cfg)
+    reply_mode = getattr(state, "reply_mode", "thread")
     response_thread_ts = None if reply_mode == "channel" else thread_ts
     if reply_mode != "channel" and response_thread_ts is None:
         response_thread_ts = message_ts

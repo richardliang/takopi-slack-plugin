@@ -77,6 +77,10 @@ class SlackClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def set_token(self, token: str) -> None:
+        self._token = token
+        self._client.headers["Authorization"] = f"Bearer {token}"
+
     async def _request(
         self,
         method: str,

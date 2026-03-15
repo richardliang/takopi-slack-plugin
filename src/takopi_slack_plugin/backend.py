@@ -12,15 +12,18 @@ from takopi.api import (
     SetupResult,
     TransportBackend,
     TransportRuntime,
-    ExecBridgeConfig,
     ConfigError,
     HOME_CONFIG_PATH,
     install_issue,
     load_settings,
 )
 
-from .bridge import SlackBridgeConfig, SlackPresenter, SlackTransport, run_main_loop
-from .client import SlackClient
+from .bridge import (
+    SlackBridgeConfig,
+    build_startup_message,
+    create_reloadable_slack_state,
+    run_main_loop,
+)
 from .config import SlackTransportSettings
 from .onboarding import interactive_setup
 from .thread_sessions import SlackThreadSessionStore, resolve_sessions_path
@@ -125,39 +128,23 @@ class SlackBackend(TransportBackend):
         settings = _expect_transport_settings(
             transport_config, config_path=config_path
         )
-        startup_msg = _build_startup_message(runtime, startup_pwd=os.getcwd())
-        client = SlackClient(settings.bot_token)
-        transport = SlackTransport(
-            client,
-            action_blocks=settings.action_blocks,
-        )
-        presenter = SlackPresenter(message_overflow=settings.message_overflow)
-        exec_cfg = ExecBridgeConfig(
-            transport=transport,
-            presenter=presenter,
-            final_notify=final_notify,
-        )
+        startup_pwd = os.getcwd()
+        startup_msg = build_startup_message(runtime, startup_pwd=startup_pwd)
         thread_store = SlackThreadSessionStore(
             resolve_sessions_path(config_path)
         )
+        state, exec_cfg = create_reloadable_slack_state(
+            settings,
+            startup_pwd=startup_pwd,
+            startup_msg=startup_msg,
+            final_notify=final_notify,
+        )
         cfg = SlackBridgeConfig(
-            client=client,
             runtime=runtime,
             channel_id=settings.channel_id,
-            allowed_user_ids=settings.allowed_user_ids,
-            allowed_channel_ids=settings.allowed_channel_ids,
-            plugin_channels=settings.plugin_channels,
-            reply_mode=settings.reply_mode,
-            app_token=settings.app_token,
-            startup_msg=startup_msg,
             exec_cfg=exec_cfg,
-            files=settings.files,
-            action_handlers=settings.action_handlers,
-            action_blocks=settings.action_blocks,
+            state=state,
             thread_store=thread_store,
-            stale_worktree_reminder=settings.stale_worktree_reminder,
-            stale_worktree_hours=settings.stale_worktree_hours,
-            stale_worktree_check_interval_s=settings.stale_worktree_check_interval_s,
         )
 
         async def run_loop() -> None:
@@ -170,36 +157,6 @@ class SlackBackend(TransportBackend):
             )
 
         anyio.run(run_loop)
-
-
-def _build_startup_message(runtime: TransportRuntime, *, startup_pwd: str) -> str:
-    available_engines = list(runtime.available_engine_ids())
-    missing_engines = list(runtime.missing_engine_ids())
-    misconfigured_engines = list(runtime.engine_ids_with_status("bad_config"))
-    failed_engines = list(runtime.engine_ids_with_status("load_error"))
-
-    engine_list = ", ".join(available_engines) if available_engines else "none"
-
-    notes: list[str] = []
-    if missing_engines:
-        notes.append(f"not installed: {', '.join(missing_engines)}")
-    if misconfigured_engines:
-        notes.append(f"misconfigured: {', '.join(misconfigured_engines)}")
-    if failed_engines:
-        notes.append(f"failed to load: {', '.join(failed_engines)}")
-    if notes:
-        engine_list = f"{engine_list} ({'; '.join(notes)})"
-
-    project_aliases = sorted(set(runtime.project_aliases()), key=str.lower)
-    project_list = ", ".join(project_aliases) if project_aliases else "none"
-
-    return (
-        "takopi is ready\n\n"
-        f"default: `{runtime.default_engine}`\n"
-        f"agents: `{engine_list}`\n"
-        f"projects: `{project_list}`\n"
-        f"working in: `{startup_pwd}`"
-    )
 
 
 slack_backend = SlackBackend()

@@ -26,6 +26,7 @@ from takopi.api import (
     TransportRuntime,
     get_logger,
 )
+from takopi.config_watch import ConfigReload, watch_config as core_watch_config
 from takopi.directives import parse_directives
 from takopi.ids import RESERVED_COMMAND_IDS
 from takopi.plugins import COMMAND_GROUP, list_ids
@@ -33,7 +34,7 @@ from takopi.runners.run_options import EngineRunOptions
 
 from .client import SlackApiError, SlackClient, SlackMessage, open_socket_url
 from .commands import dispatch_command, split_command_args
-from .config import SlackActionHandler, SlackFilesSettings
+from .config import SlackActionHandler, SlackFilesSettings, SlackTransportSettings
 from .engine import run_engine, send_plain
 from .commands.file_transfer import (
     extract_files,
@@ -66,6 +67,10 @@ THREAD_SEND_ERRORS = {
     "message_not_found",
     "thread_ts_not_found",
 }
+
+
+def _slack_state(cfg: SlackBridgeConfig | Any) -> ReloadableSlackState | Any:
+    return getattr(cfg, "state", cfg)
 
 
 class SlackPresenter:
@@ -130,25 +135,292 @@ class SlackPresenter:
         return rendered
 
 
-@dataclass(frozen=True, slots=True)
-class SlackBridgeConfig:
+def build_startup_message(
+    runtime: TransportRuntime,
+    *,
+    startup_pwd: str,
+) -> str:
+    available_engines = list(runtime.available_engine_ids())
+    missing_engines = list(runtime.missing_engine_ids())
+    misconfigured_engines = list(runtime.engine_ids_with_status("bad_config"))
+    failed_engines = list(runtime.engine_ids_with_status("load_error"))
+
+    engine_list = ", ".join(available_engines) if available_engines else "none"
+
+    notes: list[str] = []
+    if missing_engines:
+        notes.append(f"not installed: {', '.join(missing_engines)}")
+    if misconfigured_engines:
+        notes.append(f"misconfigured: {', '.join(misconfigured_engines)}")
+    if failed_engines:
+        notes.append(f"failed to load: {', '.join(failed_engines)}")
+    if notes:
+        engine_list = f"{engine_list} ({'; '.join(notes)})"
+
+    project_aliases = sorted(set(runtime.project_aliases()), key=str.lower)
+    project_list = ", ".join(project_aliases) if project_aliases else "none"
+
+    return (
+        "takopi is ready\n\n"
+        f"default: `{runtime.default_engine}`\n"
+        f"agents: `{engine_list}`\n"
+        f"projects: `{project_list}`\n"
+        f"working in: `{startup_pwd}`"
+    )
+
+
+class ReloadableSlackPresenter:
+    def __init__(self, state: "ReloadableSlackState") -> None:
+        self._state = state
+
+    def render_progress(
+        self,
+        state,
+        *,
+        elapsed_s: float,
+        label: str = "working",
+    ) -> RenderedMessage:
+        return self._state.presenter.render_progress(
+            state,
+            elapsed_s=elapsed_s,
+            label=label,
+        )
+
+    def render_final(
+        self,
+        state,
+        *,
+        elapsed_s: float,
+        status: str,
+        answer: str,
+    ) -> RenderedMessage:
+        return self._state.presenter.render_final(
+            state,
+            elapsed_s=elapsed_s,
+            status=status,
+            answer=answer,
+        )
+
+
+class ReloadableSlackTransport:
+    def __init__(self, state: "ReloadableSlackState") -> None:
+        self._state = state
+
+    async def close(self) -> None:
+        await self._state.transport.close()
+        retired = list(self._state.retired_clients)
+        self._state.retired_clients.clear()
+        for client in retired:
+            await client.close()
+
+    async def send(
+        self,
+        *,
+        channel_id: int | str,
+        message: RenderedMessage,
+        options: SendOptions | None = None,
+    ) -> MessageRef | None:
+        return await self._state.transport.send(
+            channel_id=channel_id,
+            message=message,
+            options=options,
+        )
+
+    async def edit(
+        self,
+        *,
+        ref: MessageRef,
+        message: RenderedMessage,
+        wait: bool = True,
+    ) -> MessageRef | None:
+        return await self._state.transport.edit(
+            ref=ref,
+            message=message,
+            wait=wait,
+        )
+
+    async def delete(self, *, ref: MessageRef) -> bool:
+        return await self._state.transport.delete(ref=ref)
+
+
+@dataclass(slots=True)
+class ReloadableSlackState:
+    startup_pwd: str
     client: SlackClient
-    runtime: TransportRuntime
-    channel_id: str
+    transport: "SlackTransport"
+    presenter: SlackPresenter
+    bot_token: str
+    app_token: str
     allowed_user_ids: list[str]
     allowed_channel_ids: list[str]
     plugin_channels: dict[str, str]
     reply_mode: Literal["thread", "channel"]
-    app_token: str
+    message_overflow: Literal["trim", "split"]
     startup_msg: str
-    exec_cfg: ExecBridgeConfig
     files: SlackFilesSettings
     action_handlers: list[SlackActionHandler] = field(default_factory=list)
     action_blocks: list[dict[str, Any]] | None = None
-    thread_store: SlackThreadSessionStore | None = None
     stale_worktree_reminder: bool = False
     stale_worktree_hours: float = 24.0
     stale_worktree_check_interval_s: float = 600.0
+    needs_reconnect: bool = False
+    reconnect_socket: Callable[[], Awaitable[None]] | None = None
+    retired_clients: list[SlackClient] = field(default_factory=list)
+
+    async def request_reconnect(self) -> None:
+        self.needs_reconnect = True
+        reconnect = self.reconnect_socket
+        if reconnect is None:
+            return
+        try:
+            await reconnect()
+        except Exception as exc:  # pragma: no cover - safety net
+            logger.warning(
+                "slack.socket.reconnect_failed",
+                error=str(exc),
+                error_type=exc.__class__.__name__,
+            )
+
+
+def create_reloadable_slack_state(
+    settings: SlackTransportSettings,
+    *,
+    final_notify: bool,
+    startup_msg: str,
+    startup_pwd: str,
+) -> tuple[ReloadableSlackState, ExecBridgeConfig]:
+    client = SlackClient(settings.bot_token)
+    state = ReloadableSlackState(
+        startup_pwd=startup_pwd,
+        client=client,
+        transport=SlackTransport(
+            client,
+            action_blocks=copy.deepcopy(settings.action_blocks),
+        ),
+        presenter=SlackPresenter(message_overflow=settings.message_overflow),
+        bot_token=settings.bot_token,
+        app_token=settings.app_token,
+        allowed_user_ids=list(settings.allowed_user_ids),
+        allowed_channel_ids=list(settings.allowed_channel_ids),
+        plugin_channels=dict(settings.plugin_channels),
+        reply_mode=settings.reply_mode,
+        message_overflow=settings.message_overflow,
+        startup_msg=startup_msg,
+        files=settings.files,
+        action_handlers=list(settings.action_handlers),
+        action_blocks=copy.deepcopy(settings.action_blocks),
+        stale_worktree_reminder=settings.stale_worktree_reminder,
+        stale_worktree_hours=settings.stale_worktree_hours,
+        stale_worktree_check_interval_s=settings.stale_worktree_check_interval_s,
+    )
+    exec_cfg = ExecBridgeConfig(
+        transport=ReloadableSlackTransport(state),
+        presenter=ReloadableSlackPresenter(state),
+        final_notify=final_notify,
+    )
+    return state, exec_cfg
+
+
+async def reload_slack_settings(
+    state: ReloadableSlackState,
+    settings: SlackTransportSettings,
+    runtime: TransportRuntime,
+) -> None:
+    bot_token_changed = settings.bot_token != state.bot_token
+    app_token_changed = settings.app_token != state.app_token
+    action_blocks = copy.deepcopy(settings.action_blocks)
+    action_blocks_changed = action_blocks != state.action_blocks
+    message_overflow_changed = settings.message_overflow != state.message_overflow
+
+    client = state.client
+    if bot_token_changed:
+        client = SlackClient(settings.bot_token)
+        state.retired_clients.append(state.client)
+        state.client = client
+
+    if bot_token_changed or action_blocks_changed:
+        outbox = state.transport._outbox
+        state.transport = SlackTransport(
+            client,
+            action_blocks=copy.deepcopy(action_blocks),
+            outbox=outbox,
+        )
+    if message_overflow_changed:
+        state.presenter = SlackPresenter(
+            message_overflow=settings.message_overflow
+        )
+
+    state.bot_token = settings.bot_token
+    state.app_token = settings.app_token
+    state.allowed_user_ids = list(settings.allowed_user_ids)
+    state.allowed_channel_ids = list(settings.allowed_channel_ids)
+    state.plugin_channels = dict(settings.plugin_channels)
+    state.reply_mode = settings.reply_mode
+    state.message_overflow = settings.message_overflow
+    state.startup_msg = build_startup_message(
+        runtime,
+        startup_pwd=state.startup_pwd,
+    )
+    state.files = settings.files
+    state.action_handlers = list(settings.action_handlers)
+    state.action_blocks = action_blocks
+    state.stale_worktree_reminder = settings.stale_worktree_reminder
+    state.stale_worktree_hours = settings.stale_worktree_hours
+    state.stale_worktree_check_interval_s = (
+        settings.stale_worktree_check_interval_s
+    )
+
+    if bot_token_changed or app_token_changed:
+        await state.request_reconnect()
+
+
+@dataclass(frozen=True, slots=True)
+class SlackBridgeConfig:
+    runtime: TransportRuntime
+    channel_id: str
+    exec_cfg: ExecBridgeConfig
+    state: ReloadableSlackState
+    thread_store: SlackThreadSessionStore | None = None
+
+    @property
+    def client(self) -> SlackClient:
+        return self.state.client
+
+    @property
+    def files(self) -> SlackFilesSettings:
+        return self.state.files
+
+    @property
+    def reply_mode(self) -> Literal["thread", "channel"]:
+        return self.state.reply_mode
+
+    @property
+    def app_token(self) -> str:
+        return self.state.app_token
+
+    @property
+    def startup_msg(self) -> str:
+        return self.state.startup_msg
+
+    @property
+    def action_handlers(self) -> list[SlackActionHandler]:
+        return self.state.action_handlers
+
+    @property
+    def action_blocks(self) -> list[dict[str, Any]] | None:
+        return self.state.action_blocks
+
+    @property
+    def stale_worktree_reminder(self) -> bool:
+        return self.state.stale_worktree_reminder
+
+    @property
+    def stale_worktree_hours(self) -> float:
+        return self.state.stale_worktree_hours
+
+    @property
+    def stale_worktree_check_interval_s(self) -> float:
+        return self.state.stale_worktree_check_interval_s
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,9 +449,10 @@ class SlackTransport:
         client: SlackClient,
         *,
         action_blocks: list[dict[str, Any]] | None = None,
+        outbox: SlackOutbox | None = None,
     ) -> None:
         self._client = client
-        self._outbox = SlackOutbox()
+        self._outbox = outbox or SlackOutbox()
         self._send_counter = 0
         self._action_blocks = action_blocks
 
@@ -744,19 +1017,21 @@ def _should_skip_message(message: SlackMessage, bot_user_id: str | None) -> bool
 
 
 def _is_allowed_channel(cfg: SlackBridgeConfig, channel_id: str | None) -> bool:
+    state = _slack_state(cfg)
     if not isinstance(channel_id, str) or not channel_id:
         return False
-    if "*" in cfg.allowed_channel_ids:
+    if "*" in state.allowed_channel_ids:
         return True
-    return channel_id in cfg.allowed_channel_ids
+    return channel_id in state.allowed_channel_ids
 
 
 def _is_allowed_user(cfg: SlackBridgeConfig, user_id: str | None) -> bool:
-    if not cfg.allowed_user_ids:
+    state = _slack_state(cfg)
+    if not state.allowed_user_ids:
         return True
     if not isinstance(user_id, str) or not user_id:
         return False
-    return user_id in cfg.allowed_user_ids
+    return user_id in state.allowed_user_ids
 
 
 def _should_process_socket_message(
@@ -776,7 +1051,7 @@ def _response_thread_id_for_message(
     cfg: SlackBridgeConfig,
     message: SlackMessage,
 ) -> str | None:
-    if cfg.reply_mode == "channel":
+    if _slack_state(cfg).reply_mode == "channel":
         return None
     return message.thread_ts or message.ts
 
@@ -786,15 +1061,16 @@ def _response_thread_id(
     *,
     thread_ts: str | None,
 ) -> str | None:
-    if cfg.reply_mode == "channel":
+    if _slack_state(cfg).reply_mode == "channel":
         return None
     return thread_ts
 
 
 async def _send_startup(cfg: SlackBridgeConfig) -> None:
-    if not cfg.startup_msg.strip():
+    startup_msg = _slack_state(cfg).startup_msg
+    if not startup_msg.strip():
         return
-    message = RenderedMessage(text=cfg.startup_msg)
+    message = RenderedMessage(text=startup_msg)
     sent = await cfg.exec_cfg.transport.send(
         channel_id=cfg.channel_id,
         message=message,
@@ -1073,15 +1349,16 @@ def _resolve_command_channel(
     args_text: str = "",
     source_channel_id: str | None = None,
 ) -> str:
+    state = _slack_state(cfg)
     command_key = _normalize_route_key(command_id)
     if args_text:
         tokens = split_command_args(args_text)
         if tokens:
             subcommand_key = _normalize_route_key(f"{command_key} {tokens[0]}")
-            if subcommand_key in cfg.plugin_channels:
-                return cfg.plugin_channels[subcommand_key]
+            if subcommand_key in state.plugin_channels:
+                return state.plugin_channels[subcommand_key]
     fallback_channel_id = source_channel_id or cfg.channel_id
-    return cfg.plugin_channels.get(command_key, fallback_channel_id)
+    return state.plugin_channels.get(command_key, fallback_channel_id)
 
 
 async def _respond_ephemeral(
@@ -1397,13 +1674,21 @@ async def _maybe_handle_slash_builtin(
     request: SlashCommandRequest,
 ) -> bool:
     thread_store = cfg.thread_store
-    if thread_store is None:
+    if thread_store is None and request.command_id in {
+        "status",
+        "engine",
+        "model",
+        "reasoning",
+        "session",
+    }:
         await _respond_to_slash(
             cfg,
             request,
             "Slack thread state store is not configured.",
         )
         return True
+    if thread_store is None:
+        return False
 
     if request.command_id == "status":
         state = await thread_store.get_state(
@@ -1744,7 +2029,7 @@ async def _send_archive_message(
     blocks = _build_archive_blocks(
         text,
         thread_id=thread_id,
-        action_blocks=cfg.action_blocks,
+        action_blocks=cfg.state.action_blocks,
         include_actions=include_actions,
     )
     await cfg.client.post_message(
@@ -1772,7 +2057,7 @@ async def _clear_archive_actions(
         blocks=_build_archive_blocks(
             text,
             thread_id=thread_id,
-            action_blocks=cfg.action_blocks,
+            action_blocks=cfg.state.action_blocks,
             include_actions=False,
         ),
     )
@@ -1926,7 +2211,7 @@ async def _handle_archive_cancel_action(
         blocks=_build_archive_blocks(
             text,
             thread_id=_extract_payload_thread_id(payload),
-            action_blocks=cfg.action_blocks,
+            action_blocks=cfg.state.action_blocks,
             include_actions=False,
         ),
     )
@@ -1939,7 +2224,7 @@ async def _handle_custom_action(
     running_tasks: RunningTasks,
 ) -> bool:
     action_map: dict[str, tuple[str, str]] = {}
-    for handler in cfg.action_handlers:
+    for handler in cfg.state.action_handlers:
         action_map[handler.action_id] = (handler.command, handler.args)
     if not action_map:
         return False
@@ -2089,7 +2374,7 @@ async def _finalize_archive_message(
     blocks = _build_archive_blocks(
         text,
         thread_id=thread_id,
-        action_blocks=cfg.action_blocks,
+        action_blocks=cfg.state.action_blocks,
         include_actions=False,
     )
     if isinstance(message_ts, str):
@@ -2239,7 +2524,7 @@ async def _handle_cancel_action(
         blocks=_build_archive_blocks(
             text,
             thread_id=thread_id,
-            action_blocks=cfg.action_blocks,
+            action_blocks=cfg.state.action_blocks,
             include_actions=True,
         ),
     )
@@ -2438,13 +2723,13 @@ async def _send_stale_worktree_reminder(
         return
     text = _format_stale_worktree_text(
         worktree=snapshot.worktree,
-        hours=cfg.stale_worktree_hours,
+        hours=cfg.state.stale_worktree_hours,
         owner_user_id=snapshot.owner_user_id,
     )
     blocks = _build_archive_blocks(
         text,
         thread_id=snapshot.thread_id,
-        action_blocks=cfg.action_blocks,
+        action_blocks=cfg.state.action_blocks,
     )
     message = RenderedMessage(text=text)
     message.extra["blocks"] = blocks
@@ -2463,11 +2748,17 @@ async def _send_stale_worktree_reminder(
 
 
 async def _run_stale_worktree_reminders(cfg: SlackBridgeConfig) -> None:
-    if not cfg.stale_worktree_reminder or cfg.thread_store is None:
+    if cfg.thread_store is None:
         return
-    interval_s = max(30.0, float(cfg.stale_worktree_check_interval_s))
-    stale_s = max(0.0, float(cfg.stale_worktree_hours) * 3600.0)
     while True:
+        interval_s = max(
+            30.0,
+            float(cfg.state.stale_worktree_check_interval_s),
+        )
+        if not cfg.state.stale_worktree_reminder:
+            await anyio.sleep(interval_s)
+            continue
+        stale_s = max(0.0, float(cfg.state.stale_worktree_hours) * 3600.0)
         now = time.time()
         try:
             snapshots = await cfg.thread_store.list_thread_snapshots()
@@ -2503,38 +2794,54 @@ async def _run_stale_worktree_reminders(cfg: SlackBridgeConfig) -> None:
         await anyio.sleep(interval_s)
 
 
-async def _run_socket_loop(
+async def _resolve_bot_identity(
     cfg: SlackBridgeConfig,
-    *,
-    bot_user_id: str | None,
-    bot_name: str | None,
-) -> None:
-    if not cfg.app_token:
-        raise ConfigError(
-            "Missing transports.slack.app_token."
-        )
+) -> tuple[str | None, str | None]:
+    try:
+        auth = await cfg.client.auth_test()
+    except SlackApiError as exc:
+        logger.warning("slack.auth_test_failed", error=str(exc))
+        return None, None
+    return auth.user_id, auth.user_name
 
+
+async def _run_socket_loop(cfg: SlackBridgeConfig) -> None:
     running_tasks: RunningTasks = {}
     backoff_s = 1.0
 
     async with anyio.create_task_group() as tg:
-        if cfg.stale_worktree_reminder and cfg.thread_store is not None:
+        if cfg.thread_store is not None:
             tg.start_soon(_run_stale_worktree_reminders, cfg)
         while True:
+            app_token = cfg.state.app_token
+            if not app_token:
+                raise ConfigError("Missing transports.slack.app_token.")
+
+            bot_user_id, bot_name = await _resolve_bot_identity(cfg)
             try:
-                socket_url = await open_socket_url(cfg.app_token)
+                socket_url = await open_socket_url(app_token)
             except SlackApiError as exc:
                 logger.warning("slack.socket.open_failed", error=str(exc))
                 await anyio.sleep(backoff_s)
                 continue
 
+            reconnect_requested = False
             try:
                 async with websockets.connect(
                     socket_url,
                     ping_interval=10,
                     ping_timeout=10,
                 ) as ws:
+                    async def _request_reconnect() -> None:
+                        await ws.close()
+
+                    cfg.state.reconnect_socket = _request_reconnect
                     while True:
+                        if cfg.state.needs_reconnect:
+                            reconnect_requested = True
+                            cfg.state.needs_reconnect = False
+                            logger.info("slack.socket.reconnect_requested")
+                            break
                         raw = await ws.recv()
                         if isinstance(raw, bytes):
                             raw = raw.decode("utf-8", "ignore")
@@ -2617,12 +2924,51 @@ async def _run_socket_loop(
                             cleaned,
                             running_tasks,
                         )
+                    cfg.state.reconnect_socket = None
             except WebSocketException as exc:
-                logger.warning("slack.socket_failed", error=str(exc))
+                if not reconnect_requested and not cfg.state.needs_reconnect:
+                    logger.warning("slack.socket_failed", error=str(exc))
             except OSError as exc:
-                logger.warning("slack.socket_failed", error=str(exc))
+                if not reconnect_requested and not cfg.state.needs_reconnect:
+                    logger.warning("slack.socket_failed", error=str(exc))
+            finally:
+                cfg.state.reconnect_socket = None
+
+            if reconnect_requested or cfg.state.needs_reconnect:
+                cfg.state.needs_reconnect = False
+                continue
 
             await anyio.sleep(backoff_s)
+
+
+async def _watch_slack_config(
+    cfg: SlackBridgeConfig,
+    config_path: Path,
+    default_engine_override: str | None,
+    transport_id: str,
+) -> None:
+    async def _on_reload(reload: ConfigReload) -> None:
+        try:
+            transport_config = reload.settings.transport_config(
+                transport_id,
+                config_path=reload.config_path,
+            )
+            settings = SlackTransportSettings.from_config(
+                transport_config,
+                config_path=reload.config_path,
+            )
+        except ConfigError as exc:
+            logger.warning("slack.reload.failed", error=str(exc))
+            return
+
+        await reload_slack_settings(cfg.state, settings, cfg.runtime)
+
+    await core_watch_config(
+        config_path=config_path,
+        runtime=cfg.runtime,
+        default_engine_override=default_engine_override,
+        on_reload=_on_reload,
+    )
 
 
 async def run_main_loop(
@@ -2633,15 +2979,16 @@ async def run_main_loop(
     transport_id: str | None = None,
     transport_config: object | None = None,
 ) -> None:
-    _ = watch_config, default_engine_override, transport_id, transport_config
+    _ = transport_config
     await _send_startup(cfg)
-    bot_user_id: str | None = None
-    bot_name: str | None = None
-    try:
-        auth = await cfg.client.auth_test()
-        bot_user_id = auth.user_id
-        bot_name = auth.user_name
-    except SlackApiError as exc:
-        logger.warning("slack.auth_test_failed", error=str(exc))
-
-    await _run_socket_loop(cfg, bot_user_id=bot_user_id, bot_name=bot_name)
+    config_path = cfg.runtime.config_path
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_run_socket_loop, cfg)
+        if watch_config and config_path is not None:
+            tg.start_soon(
+                _watch_slack_config,
+                cfg,
+                config_path,
+                default_engine_override,
+                transport_id or "slack",
+            )
