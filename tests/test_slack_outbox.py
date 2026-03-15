@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anyio
 import pytest
 
 from takopi_slack_plugin.outbox import (
@@ -142,3 +143,40 @@ async def test_outbox_replaces_pending_without_worker() -> None:
     assert op1.done.is_set()
     assert op1.result is None
     assert op2.queued_at == 1.0
+
+
+@pytest.mark.anyio
+async def test_outbox_close_with_drain_finishes_pending_work() -> None:
+    started = anyio.Event()
+    release = anyio.Event()
+    calls: list[str] = []
+    outbox = SlackOutbox(interval_for_channel=lambda _: 0.0)
+
+    async def execute() -> str:
+        started.set()
+        await release.wait()
+        calls.append("done")
+        return "done"
+
+    op = OutboxOp(
+        execute=execute,
+        priority=SEND_PRIORITY,
+        queued_at=1.0,
+        channel_id="C1",
+    )
+
+    async def enqueue_pending() -> None:
+        await outbox.enqueue(key="op", op=op, wait=False)
+
+    async def close_outbox() -> None:
+        await outbox.close(drain=True)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(enqueue_pending)
+        await started.wait()
+        tg.start_soon(close_outbox)
+        release.set()
+
+    assert op.done.is_set()
+    assert op.result == "done"
+    assert calls == ["done"]

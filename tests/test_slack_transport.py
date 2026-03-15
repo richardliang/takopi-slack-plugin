@@ -17,7 +17,8 @@ class _ImmediateOutbox:
         _ = key
         return None
 
-    async def close(self) -> None:
+    async def close(self, *, drain: bool = False) -> None:
+        _ = drain
         return None
 
 

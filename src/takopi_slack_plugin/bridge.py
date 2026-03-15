@@ -208,10 +208,6 @@ class ReloadableSlackTransport:
 
     async def close(self) -> None:
         await self._state.transport.close()
-        retired = list(self._state.retired_clients)
-        self._state.retired_clients.clear()
-        for client in retired:
-            await client.close()
 
     async def send(
         self,
@@ -265,7 +261,6 @@ class ReloadableSlackState:
     stale_worktree_check_interval_s: float = 600.0
     needs_reconnect: bool = False
     reconnect_socket: Callable[[], Awaitable[None]] | None = None
-    retired_clients: list[SlackClient] = field(default_factory=list)
 
     async def request_reconnect(self) -> None:
         self.needs_reconnect = True
@@ -333,17 +328,18 @@ async def reload_slack_settings(
     message_overflow_changed = settings.message_overflow != state.message_overflow
 
     client = state.client
+    retired_transport: SlackTransport | None = None
+    close_retired_client = False
     if bot_token_changed:
         client = SlackClient(settings.bot_token)
-        state.retired_clients.append(state.client)
         state.client = client
 
     if bot_token_changed or action_blocks_changed:
-        outbox = state.transport._outbox
+        retired_transport = state.transport
+        close_retired_client = bot_token_changed
         state.transport = SlackTransport(
             client,
             action_blocks=copy.deepcopy(action_blocks),
-            outbox=outbox,
         )
     if message_overflow_changed:
         state.presenter = SlackPresenter(
@@ -372,6 +368,11 @@ async def reload_slack_settings(
 
     if bot_token_changed or app_token_changed:
         await state.request_reconnect()
+    if retired_transport is not None:
+        await retired_transport.close(
+            drain=True,
+            close_client=close_retired_client,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,9 +499,15 @@ class SlackTransport:
             return []
         return None
 
-    async def close(self) -> None:
-        await self._outbox.close()
-        await self._client.close()
+    async def close(
+        self,
+        *,
+        drain: bool = False,
+        close_client: bool = True,
+    ) -> None:
+        await self._outbox.close(drain=drain)
+        if close_client:
+            await self._client.close()
 
     async def send(
         self,
