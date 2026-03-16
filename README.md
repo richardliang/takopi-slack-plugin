@@ -3,6 +3,9 @@
 slack transport plugin for takopi. socket mode only, supports thread or
 top-level replies, and stores per-thread context + resume tokens.
 
+For the planned direct-trigger and Bolt ingress update, see
+[docs/SLACK_DIRECT_TRIGGER_SPEC.md](docs/SLACK_DIRECT_TRIGGER_SPEC.md).
+
 ## features
 
 - socket mode only; listens in one or more configured channels or dms
