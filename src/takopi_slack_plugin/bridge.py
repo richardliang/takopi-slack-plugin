@@ -1277,7 +1277,7 @@ async def _handle_slack_message(
         text=prompt,
         resume_token=resume_token,
         context=context,
-        engine_override=engine_override,
+        engine_override=engine_for_session,
         thread_id=response_thread_id,
         on_thread_known=on_thread_known,
         run_options=run_options,
