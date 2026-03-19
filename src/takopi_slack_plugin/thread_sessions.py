@@ -23,6 +23,7 @@ class _ThreadSession(msgspec.Struct, forbid_unknown_fields=False):
     owner_user_id: str | None = None
     worktree: _WorktreeRef | None = None
     reminder: _ReminderState | None = None
+    approval: _PendingApproval | None = None
 
 
 class _WorktreeRef(msgspec.Struct, forbid_unknown_fields=False):
@@ -32,6 +33,19 @@ class _WorktreeRef(msgspec.Struct, forbid_unknown_fields=False):
 
 class _ReminderState(msgspec.Struct, forbid_unknown_fields=False):
     sent_at: float | None = None
+
+
+class _PendingApproval(msgspec.Struct, forbid_unknown_fields=False):
+    requester_user_id: str | None = None
+    source_message_ts: str | None = None
+    response_thread_id: str | None = None
+    cleaned_text: str | None = None
+    approval_message_ts: str | None = None
+    status: str = "pending"
+    created_at: float | None = None
+    decided_at: float | None = None
+    decided_by_user_id: str | None = None
+    files: list[dict[str, object]] = msgspec.field(default_factory=list)
 
 
 class _ThreadSessionsState(msgspec.Struct, forbid_unknown_fields=False):
@@ -48,6 +62,22 @@ class WorktreeSnapshot:
 @dataclass(frozen=True, slots=True)
 class ReminderSnapshot:
     sent_at: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class PendingApprovalSnapshot:
+    channel_id: str
+    thread_id: str
+    requester_user_id: str | None
+    source_message_ts: str | None
+    response_thread_id: str | None
+    cleaned_text: str | None
+    approval_message_ts: str | None
+    status: str
+    created_at: float | None
+    decided_at: float | None
+    decided_by_user_id: str | None
+    files: list[dict[str, object]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +157,27 @@ class SlackThreadSessionStore(JsonStateStore[_ThreadSessionsState]):
             owner_user_id=session.owner_user_id,
             worktree=worktree,
             reminder=reminder,
+        )
+
+    @staticmethod
+    def _approval_snapshot_from_session(
+        channel_id: str,
+        thread_id: str,
+        approval: _PendingApproval,
+    ) -> PendingApprovalSnapshot:
+        return PendingApprovalSnapshot(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            requester_user_id=approval.requester_user_id,
+            source_message_ts=approval.source_message_ts,
+            response_thread_id=approval.response_thread_id,
+            cleaned_text=approval.cleaned_text,
+            approval_message_ts=approval.approval_message_ts,
+            status=approval.status,
+            created_at=approval.created_at,
+            decided_at=approval.decided_at,
+            decided_by_user_id=approval.decided_by_user_id,
+            files=[dict(item) for item in approval.files],
         )
 
     async def get_resume(
@@ -256,6 +307,90 @@ class SlackThreadSessionStore(JsonStateStore[_ThreadSessionsState]):
                 return
             session.resumes = {}
             self._save_locked()
+
+    async def get_pending_approval(
+        self, *, channel_id: str, thread_id: str
+    ) -> PendingApprovalSnapshot | None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._state.threads.get(key)
+            if session is None or session.approval is None:
+                return None
+            return self._approval_snapshot_from_session(
+                channel_id, thread_id, session.approval
+            )
+
+    async def set_pending_approval(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+        requester_user_id: str | None,
+        source_message_ts: str,
+        response_thread_id: str | None,
+        cleaned_text: str | None,
+        created_at: float,
+        files: list[dict[str, object]] | None = None,
+    ) -> PendingApprovalSnapshot:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._get_or_create(key)
+            session.approval = _PendingApproval(
+                requester_user_id=requester_user_id,
+                source_message_ts=source_message_ts,
+                response_thread_id=response_thread_id,
+                cleaned_text=cleaned_text,
+                created_at=created_at,
+                files=[dict(item) for item in files] if files else [],
+            )
+            self._save_locked()
+            return self._approval_snapshot_from_session(
+                channel_id, thread_id, session.approval
+            )
+
+    async def set_pending_approval_message(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+        approval_message_ts: str,
+    ) -> PendingApprovalSnapshot | None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._state.threads.get(key)
+            if session is None or session.approval is None:
+                return None
+            session.approval.approval_message_ts = approval_message_ts
+            self._save_locked()
+            return self._approval_snapshot_from_session(
+                channel_id, thread_id, session.approval
+            )
+
+    async def resolve_pending_approval(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+        status: str,
+        decided_by_user_id: str | None,
+        decided_at: float,
+    ) -> PendingApprovalSnapshot | None:
+        key = self._thread_key(channel_id, thread_id)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            session = self._state.threads.get(key)
+            if session is None or session.approval is None:
+                return None
+            session.approval.status = status
+            session.approval.decided_by_user_id = decided_by_user_id
+            session.approval.decided_at = decided_at
+            self._save_locked()
+            return self._approval_snapshot_from_session(
+                channel_id, thread_id, session.approval
+            )
 
     async def get_context(
         self, *, channel_id: str, thread_id: str

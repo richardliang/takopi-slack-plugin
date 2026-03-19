@@ -44,6 +44,7 @@ from .commands.file_transfer import (
 from .outbox import DELETE_PRIORITY, EDIT_PRIORITY, SEND_PRIORITY, OutboxOp, SlackOutbox
 from .overrides import REASONING_LEVELS, is_valid_reasoning_level, supports_reasoning
 from .thread_sessions import (
+    PendingApprovalSnapshot,
     SlackThreadSessionStore,
     ThreadSnapshot,
     WorktreeSnapshot,
@@ -56,7 +57,10 @@ MAX_BLOCK_TEXT = 2800
 CANCEL_ARCHIVE_ACTION_ID = "takopi-slack:archive-cancel"
 ARCHIVE_ACTION_ID = "takopi-slack:archive"
 CONFIRM_ARCHIVE_ACTION_ID = "takopi-slack:archive-confirm"
+APPROVE_REQUEST_ACTION_ID = "takopi-slack:approval-approve"
+DENY_REQUEST_ACTION_ID = "takopi-slack:approval-deny"
 CANCEL_ACTION_ID = "takopi-slack:cancel"
+APPROVAL_TTL_S = 1800.0
 INLINE_COMMAND_RE = re.compile(
     r"(^|\s)(?P<token>/(?P<cmd>[a-z0-9_]{1,32}))",
     re.IGNORECASE,
@@ -918,6 +922,100 @@ def _build_archive_confirm_blocks(
     ]
 
 
+def _build_approval_blocks(
+    text: str,
+    *,
+    thread_id: str | None,
+    include_actions: bool = True,
+) -> list[dict[str, Any]]:
+    value = thread_id or ""
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
+        for chunk in _split_block_text(text)
+    ]
+    if not include_actions:
+        return blocks
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "approve once"},
+                    "action_id": APPROVE_REQUEST_ACTION_ID,
+                    "style": "primary",
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "deny"},
+                    "action_id": DENY_REQUEST_ACTION_ID,
+                    "style": "danger",
+                    "value": value,
+                },
+            ],
+        }
+    )
+    return blocks
+
+
+def _is_approval_expired(
+    approval: PendingApprovalSnapshot,
+    *,
+    now: float,
+) -> bool:
+    if approval.status != "pending":
+        return False
+    if approval.created_at is None:
+        return False
+    return (now - approval.created_at) > APPROVAL_TTL_S
+
+
+def _format_approval_request_text(
+    cfg: SlackBridgeConfig,
+    approval: PendingApprovalSnapshot,
+) -> str:
+    approvers = " ".join(f"<@{user_id}>" for user_id in _slack_state(cfg).allowed_user_ids)
+    requester = (
+        f"<@{approval.requester_user_id}>"
+        if approval.requester_user_id
+        else "an unknown user"
+    )
+    excerpt = (approval.cleaned_text or "").strip()
+    if excerpt:
+        excerpt = _trim_text(excerpt, 220)
+    elif approval.files:
+        count = len(approval.files)
+        noun = "file" if count == 1 else "files"
+        excerpt = f"{count} attached {noun}"
+    text = f"{approvers} approval requested by {requester} to run Takopi."
+    if excerpt:
+        text = f"{text}\nPrompt: {excerpt}"
+    return text
+
+
+def _format_approval_resolution_text(
+    approval: PendingApprovalSnapshot,
+    *,
+    status: str,
+) -> str:
+    requester = (
+        f"<@{approval.requester_user_id}>"
+        if approval.requester_user_id
+        else "the requester"
+    )
+    actor = (
+        f"<@{approval.decided_by_user_id}>"
+        if approval.decided_by_user_id
+        else "an allowed user"
+    )
+    if status == "approved":
+        return f"approval granted by {actor} for {requester}. running request."
+    if status == "denied":
+        return f"approval denied by {actor} for {requester}."
+    return f"approval expired for {requester}."
+
+
 def _mention_regex(bot_user_id: str) -> re.Pattern[str]:
     escaped = re.escape(bot_user_id)
     return re.compile(rf"<@{escaped}(\|[^>]+)?>")
@@ -1071,6 +1169,102 @@ def _response_thread_id(
     if _slack_state(cfg).reply_mode == "channel":
         return None
     return thread_ts
+
+
+async def _publish_approval_message(
+    cfg: SlackBridgeConfig,
+    *,
+    channel_id: str,
+    thread_id: str,
+    approval: PendingApprovalSnapshot,
+    text: str,
+    include_actions: bool,
+) -> None:
+    blocks = _build_approval_blocks(
+        text,
+        thread_id=thread_id,
+        include_actions=include_actions,
+    )
+    if approval.approval_message_ts:
+        await cfg.client.update_message(
+            channel_id=channel_id,
+            ts=approval.approval_message_ts,
+            text=text,
+            blocks=blocks,
+        )
+        return
+    sent = await cfg.client.post_message(
+        channel_id=channel_id,
+        text=text,
+        blocks=blocks,
+        thread_ts=approval.response_thread_id,
+    )
+    if cfg.thread_store is not None:
+        await cfg.thread_store.set_pending_approval_message(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            approval_message_ts=sent.ts,
+        )
+
+
+async def _request_approval_for_message(
+    cfg: SlackBridgeConfig,
+    *,
+    message: SlackMessage,
+    text: str,
+) -> bool:
+    thread_store = cfg.thread_store
+    channel_id = message.channel_id or cfg.channel_id
+    if thread_store is None or not message.ts or message.thread_ts is not None:
+        return False
+
+    thread_id = message.ts
+    pending = await thread_store.get_pending_approval(
+        channel_id=channel_id,
+        thread_id=thread_id,
+    )
+    now = time.time()
+    if pending is not None and _is_approval_expired(pending, now=now):
+        pending = await thread_store.resolve_pending_approval(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            status="expired",
+            decided_by_user_id=None,
+            decided_at=now,
+        )
+        if pending is not None:
+            await _publish_approval_message(
+                cfg,
+                channel_id=channel_id,
+                thread_id=thread_id,
+                approval=pending,
+                text=_format_approval_resolution_text(pending, status="expired"),
+                include_actions=False,
+            )
+        pending = None
+    if pending is not None and pending.status == "pending" and pending.approval_message_ts:
+        return True
+
+    if pending is None or pending.status != "pending":
+        pending = await thread_store.set_pending_approval(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            requester_user_id=message.user,
+            source_message_ts=message.ts,
+            response_thread_id=_response_thread_id_for_message(cfg, message),
+            cleaned_text=text or None,
+            created_at=now,
+            files=[dict(item) for item in message.files],
+        )
+    await _publish_approval_message(
+        cfg,
+        channel_id=channel_id,
+        thread_id=thread_id,
+        approval=pending,
+        text=_format_approval_request_text(cfg, pending),
+        include_actions=True,
+    )
+    return True
 
 
 async def _send_startup(cfg: SlackBridgeConfig) -> None:
@@ -1904,6 +2098,10 @@ async def _handle_interactive(
         return
     payload_type = payload.get("type")
     if payload_type == "block_actions":
+        if await _handle_approval_approve_action(cfg, payload, running_tasks):
+            return
+        if await _handle_approval_deny_action(cfg, payload):
+            return
         if await _handle_archive_confirm_action(cfg, payload):
             return
         if await _handle_archive_cancel_action(cfg, payload):
@@ -2221,6 +2419,184 @@ async def _handle_archive_cancel_action(
             action_blocks=cfg.state.action_blocks,
             include_actions=False,
         ),
+    )
+    return True
+
+
+async def _handle_approval_approve_action(
+    cfg: SlackBridgeConfig,
+    payload: dict[str, Any],
+    running_tasks: RunningTasks,
+) -> bool:
+    actions = payload.get("actions")
+    action = _extract_block_action(actions, action_ids={APPROVE_REQUEST_ACTION_ID})
+    if action is None:
+        return False
+    if cfg.thread_store is None:
+        return True
+    channel_id = _extract_payload_channel_id(payload)
+    if not isinstance(channel_id, str):
+        return True
+    thread_id = _extract_action_thread_id(payload, action)
+    if thread_id is None:
+        await _respond_ephemeral(
+            cfg,
+            response_url=_extract_response_url(payload),
+            channel_id=channel_id,
+            text="missing thread id for approval.",
+        )
+        return True
+    approval = await cfg.thread_store.get_pending_approval(
+        channel_id=channel_id,
+        thread_id=thread_id,
+    )
+    if approval is None:
+        await _respond_ephemeral(
+            cfg,
+            response_url=_extract_response_url(payload),
+            channel_id=channel_id,
+            text="approval request not found.",
+        )
+        return True
+    now = time.time()
+    if _is_approval_expired(approval, now=now):
+        approval = await cfg.thread_store.resolve_pending_approval(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            status="expired",
+            decided_by_user_id=None,
+            decided_at=now,
+        )
+        if approval is not None:
+            await _publish_approval_message(
+                cfg,
+                channel_id=channel_id,
+                thread_id=thread_id,
+                approval=approval,
+                text=_format_approval_resolution_text(approval, status="expired"),
+                include_actions=False,
+            )
+        return True
+    if approval.status != "pending":
+        await _respond_ephemeral(
+            cfg,
+            response_url=_extract_response_url(payload),
+            channel_id=channel_id,
+            text=f"approval already {approval.status}.",
+        )
+        return True
+    approval = await cfg.thread_store.resolve_pending_approval(
+        channel_id=channel_id,
+        thread_id=thread_id,
+        status="approved",
+        decided_by_user_id=_extract_payload_user_id(payload),
+        decided_at=now,
+    )
+    if approval is None:
+        return True
+    await _publish_approval_message(
+        cfg,
+        channel_id=channel_id,
+        thread_id=thread_id,
+        approval=approval,
+        text=_format_approval_resolution_text(approval, status="approved"),
+        include_actions=False,
+    )
+    await _safe_handle_slack_message(
+        cfg,
+        SlackMessage(
+            ts=approval.source_message_ts or thread_id,
+            text=approval.cleaned_text,
+            user=approval.requester_user_id,
+            bot_id=None,
+            subtype=None,
+            thread_ts=None,
+            channel_id=channel_id,
+            files=[dict(item) for item in approval.files],
+        ),
+        approval.cleaned_text or "",
+        running_tasks,
+    )
+    return True
+
+
+async def _handle_approval_deny_action(
+    cfg: SlackBridgeConfig,
+    payload: dict[str, Any],
+) -> bool:
+    actions = payload.get("actions")
+    action = _extract_block_action(actions, action_ids={DENY_REQUEST_ACTION_ID})
+    if action is None:
+        return False
+    if cfg.thread_store is None:
+        return True
+    channel_id = _extract_payload_channel_id(payload)
+    if not isinstance(channel_id, str):
+        return True
+    thread_id = _extract_action_thread_id(payload, action)
+    if thread_id is None:
+        await _respond_ephemeral(
+            cfg,
+            response_url=_extract_response_url(payload),
+            channel_id=channel_id,
+            text="missing thread id for denial.",
+        )
+        return True
+    approval = await cfg.thread_store.get_pending_approval(
+        channel_id=channel_id,
+        thread_id=thread_id,
+    )
+    if approval is None:
+        await _respond_ephemeral(
+            cfg,
+            response_url=_extract_response_url(payload),
+            channel_id=channel_id,
+            text="approval request not found.",
+        )
+        return True
+    now = time.time()
+    if _is_approval_expired(approval, now=now):
+        approval = await cfg.thread_store.resolve_pending_approval(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            status="expired",
+            decided_by_user_id=None,
+            decided_at=now,
+        )
+        if approval is not None:
+            await _publish_approval_message(
+                cfg,
+                channel_id=channel_id,
+                thread_id=thread_id,
+                approval=approval,
+                text=_format_approval_resolution_text(approval, status="expired"),
+                include_actions=False,
+            )
+        return True
+    if approval.status != "pending":
+        await _respond_ephemeral(
+            cfg,
+            response_url=_extract_response_url(payload),
+            channel_id=channel_id,
+            text=f"approval already {approval.status}.",
+        )
+        return True
+    approval = await cfg.thread_store.resolve_pending_approval(
+        channel_id=channel_id,
+        thread_id=thread_id,
+        status="denied",
+        decided_by_user_id=_extract_payload_user_id(payload),
+        decided_at=now,
+    )
+    if approval is None:
+        return True
+    await _publish_approval_message(
+        cfg,
+        channel_id=channel_id,
+        thread_id=thread_id,
+        approval=approval,
+        text=_format_approval_resolution_text(approval, status="denied"),
+        include_actions=False,
     )
     return True
 
@@ -2912,16 +3288,26 @@ async def _run_socket_loop(cfg: SlackBridgeConfig) -> None:
                         msg = SlackMessage.from_api(event)
                         if _should_skip_message(msg, bot_user_id):
                             continue
-                        if not _is_allowed_user(cfg, msg.user):
-                            continue
-                        if not _should_process_socket_message(event, msg):
-                            continue
                         cleaned = _strip_bot_mention(
                             msg.text or "",
                             bot_user_id=bot_user_id,
                             bot_name=bot_name,
                         )
                         has_files = bool(msg.files)
+                        if not _is_allowed_user(cfg, msg.user):
+                            if (
+                                event_type == "app_mention"
+                                and msg.thread_ts is None
+                                and (cleaned.strip() or has_files)
+                            ):
+                                await _request_approval_for_message(
+                                    cfg,
+                                    message=msg,
+                                    text=cleaned,
+                                )
+                            continue
+                        if not _should_process_socket_message(event, msg):
+                            continue
                         if not cleaned.strip() and not has_files:
                             continue
                         tg.start_soon(
