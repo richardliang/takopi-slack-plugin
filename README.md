@@ -12,7 +12,7 @@ top-level replies, and stores per-thread context + resume tokens.
 - cancel button on progress messages
 - archive button on responses (deletes worktree or resets to origin/main)
 - configurable action buttons next to archive (mapped to takopi commands)
-- optional user allowlist for who can invoke the bot
+- optional user allowlist for who can invoke the bot directly
 - configurable reply mode: thread replies or top-level channel messages
 - optional stale worktree reminders prompting archive (default 24h)
 - message overflow: split or trim long responses
@@ -109,8 +109,10 @@ uploads_dir = "incoming"
 
 set `message_overflow = "trim"` if you prefer truncation instead of followups.
 
-`allowed_user_ids` limits who can invoke the bot. Leave it empty to allow any
-user in an allowed channel.
+`allowed_user_ids` limits who can invoke the bot directly. If an unauthorized
+user sends a top-level `@takopi` mention in an allowed channel, the bot posts a
+one-off approve/deny prompt for the allowed users instead of running
+immediately. Leave it empty to allow any user in an allowed channel.
 
 `allowed_channel_ids` adds extra channels that the bot will listen in. The
 default `channel_id` is always included automatically. In channels, top-level
